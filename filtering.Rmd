@@ -1,0 +1,49 @@
+---
+title: "RADSeq Data Filtering"
+author: "Jessie Pelosi"
+date: "2025-07-15"
+output:
+  html_document: 
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+```
+
+
+Let's first look at histograms of the number of loci recovered with different "M" and "n" values. The mean and standard deviation for each of these datasets look very similar. The black line in these graphs shows the mean, and the red line shows the mean minus one standard deviation. We removed samples that had recovery rates of less than the mean minus one standard deviation. 
+
+```{r }
+
+STACKS_def_cov <- read.csv("data/Stacks_filtering_cov.csv")
+
+# Look at standard deviation 
+STACKS_sum <- STACKS_def_cov %>% 
+  group_by(STACKSParam) %>% 
+  summarize(stdev = sd(n_loci), mean = mean(n_loci))
+
+ggplot() + geom_histogram(data = STACKS_def_cov, mapping = aes(x= n_loci),bins = 50) +
+  theme_bw() + facet_wrap(~STACKSParam) + geom_vline(data = STACKS_sum, mapping = aes(xintercept = mean - stdev), color = "red") + geom_vline(data = STACKS_sum, mapping = aes(xintercept = mean), color = "black") + xlab("Number of Loci")
+
+knitr::kable(STACKS_sum)
+
+STACKS_remove <- STACKS_def_cov %>% 
+  filter(STACKSParam == "default" & n_loci < 23028 )
+```
+Compare F~IS~ values for each parameter combination. Looking at these values informed our parameter choices for M and n (which minimized under- or overclustering of alleles). 
+
+```{r, warning=FALSE, fig.height=5, fig.width=8}
+popstats <- read.csv("data/Populations_StacksParams.csv")
+
+ggplot(data = popstats, mapping = aes(x=STACKSParam, y = Fis)) + geom_boxplot() + 
+  theme_bw() + ylab("Population Level Fis")
+
+# Let's zoom in a little 
+
+ggplot(data = popstats, mapping = aes(x=STACKSParam, y = Fis)) + geom_boxplot() + 
+  theme_bw() + ylim(0,0.1) + ylab("Population Level Fis")
+
+```
