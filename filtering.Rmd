@@ -32,6 +32,13 @@ knitr::kable(STACKS_sum)
 
 STACKS_remove <- STACKS_def_cov %>% 
   filter(STACKSParam == "default" & n_loci < 23028 )
+
+STACKS_default_stats <- STACKS_def_cov %>% 
+  filter(STACKSParam == "default")
+
+mean(STACKS_default_stats$n_loci, na.rm = T); min(STACKS_default_stats$n_loci); max(STACKS_default_stats$n_loci)
+sd(STACKS_default_stats$n_loci)
+
 ```
 Compare F~IS~ values for each parameter combination. Looking at these values informed our parameter choices for M and n (which minimized under- or overclustering of alleles). 
 
