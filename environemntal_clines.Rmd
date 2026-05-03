@@ -1,7 +1,7 @@
 ---
 title: "Environmental Clines"
 author: "Jessie Pelosi"
-date: "2025-07-15"
+date: "2025-03-11"
 output: 
   html_document:
     code_folding: "hide"
@@ -26,11 +26,11 @@ library(ggfortify)
 Here, we extract the bioclim variables for the populations of EUVI for which we have genomic data. We are using a 30 second resolution of the bioclim variables. 
 
 ```{r}
-locations <- read.delim("data/EUVI_locations.txt", header =T)
+locations <- read.delim("EUVI_locations.txt", header =T)
 
 # Filter locations to only samples that we are using: 
 
-popmap3 <- read.delim("data/samples_to_keep.txt", sep = " ")
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
 
 locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
 loc_lat_long <- locations_update %>% 
@@ -57,16 +57,14 @@ ggplot() + geom_sf(data = reprojected_map, color = "black", size = 0.05, fill = 
 #worldclim_global(var = "bio",res = "0.5", path = "./")
 
 # search files with .tif file extension
-# These files are NOT included in the /data directory and should be downloaded from worldclim using the line above 
-
-clim_list <- list.files("../climate/wc2.1_30s/",pattern=".tif",full.names = T)
+clim_list <- list.files("./climate/wc2.1_30s/",pattern=".tif",full.names = T)
 # stacking the bioclim variables to process them at one go 
 clim <- raster::stack(clim_list) 
 
-#plot(clim) # we don't need to plot the clim layers, but good to check just in case 
+plot(clim)
 
 conditions_occ <- extract(clim,loc_lat_long)
-#head(conditions_occ)
+head(conditions_occ)
 
 plot(clim$wc2.1_30s_bio_1)
 plot(loc_lat_long,add=T)
@@ -80,21 +78,26 @@ occs_envir <- cbind(locations_update, conditions_occs_df)
 #write.table(file = "individual_climate_data_30s.txt",occs_envir, quote = F, row.names = F)
 ```
 
-**Summary:** Starting with the 19 bioclimatic variables from the WorldClim2 dataset, we need to first remove strong correlations between predictors. Here, we start by looking the pairwise Pearson correlation coefficients (top right), histograms for each variable (center diagonal), and scatterplots (bottom left). Then we generate a PCA for the environmental predictors from which we can decide which predictors to include in the genotype-environment association models. 
+**Summary:** Starting with the 19 bioclimatic variables from the WorldClim2 dataset, we need to first remove strong correlations between predictors. Here we visualize pairwise Pearson correlation coefficients (top right), histograms for each variable (center diagonal), and scatterplots (bottom left). We need to filter the dataset to remove any strong correlations - I'm using the rule of thumb of correlations >|0.7| to filter variables.
+
 
 Based on the results below, we decided to keep:
 
-* Maximum temperature of warmest month (Bio5) and minimum temperature of coldest month (Bio6) reflect extremes in temperature that would limit the insect’s distribution in very cold and hot areas. Adult <i>E. villosus</i> overwinter in soil litter and cracks in the soil surface and so would likely be impacted by freezing conditions even during diapause (Fornasari & Sobhian, 1993). 
+* Bio5: Maximum temperature of warmest month. The weevil enters diapause in late summer and doesn’t emerge until spring. Hottest months are in late summer and may reduce survival before they can enter diapause.
 
-* Precipitation of coldest quarter (Bio19) and precipitation of driest quarter (Bio17) are likely to have indirect impacts on <i>E. villosus</i> through <i>C. solstitialis </i>, the host plant. Prolonged freezing temperatures and ice accumulation can reduce or kill developing flower buds and reduce overwintering survival rates (Roché et al., 1997; Gutierrez et al., 2017). Likewise, prolonged and severe droughts can lead to high plant mortality (Sheley & Larson, 1994; Enloe et al., 2004). 
+* Bio6: Min temperature of coldest month. Would like be a large selective pressure in eastern OR/WA sites as noted above.
 
-* Finally, mean diurnal range [(mean of monthly (max temp - min temp))] (Bio2) captures the variation in temperatures experienced across <i>E. villosus</i>’s distribution. 
+* Bio19: Precipitation of coldest quarter. I’m not totally sure about this choice, but my thought is that cold and wet temperatures may increase risk of freezing…?
+
+* Bio17: Precipitation of driest quarter. May impact EUVI via indirect impacts on YST by killing plants during drought.
+
+* Bio2: Diurnal range. This could capture the total variation in temperature that the weevils are experiencing rather than just the extremes. 
 
 
 ```{r}
 ### examine correlations between bioclimatic variables from WorldClim2
 # read in data
-env <- read.delim("data/individual_climate_data_30s.txt", sep = " ")
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
 env$Site <- as.character(env$Site)
 
 # visualize correlated variables via pairwise comparisons
@@ -119,7 +122,6 @@ loadings<- pca$loadings
 autoplot(pca, loadings = T, loadings.label = T, loadings.label.colour = "darkblue", loadings.colour = "darkblue" ) + theme_bw()
 
 
-
 # run with prcomp
 #pca <- prcomp(env_pop, scale = T)
 #summary(pca)
@@ -128,28 +130,28 @@ autoplot(pca, loadings = T, loadings.label = T, loadings.label.colour = "darkblu
 #barplot(pca$rotation[,1], main = "")
 
 ```
-**Environmental Clines**: For each bioclimatic variable, look at the clines in the Introduced (introduced) and Native (native). 
+**Environmental Clines**: For each bioclimatic variable, look at the clines in the Western US (introduced) and Greece + Turkey (native). 
 
 ```{r, fig.height=4, fig.width=5}
 bio1 <- clim[[1]]
-# Plot Introduced 
-plot(bio1, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio1 Introduced")
+# Plot Western US 
+plot(bio1, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio1 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio1, xlim = c(15,60), ylim = c(30, 50), main = "Bio1 Native")
+plot(bio1, xlim = c(15,60), ylim = c(30, 50), main = "Bio1 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio1)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio1)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 
 ```
@@ -158,401 +160,401 @@ knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Samp
 # Note that the order is bizarre, bio1 then bio10-bio19, then bio2... 
 
 bio10 <- clim[[2]]
-# Plot Introduced 
-plot(bio10, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio10 Introduced")
+# Plot Western US 
+plot(bio10, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio10 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio10, xlim = c(15,60), ylim = c(30, 50), main = "Bio10 Native")
+plot(bio10, xlim = c(15,60), ylim = c(30, 50), main = "Bio10 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio10)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio10)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio11 <- clim[[3]]
-# Plot Introduced 
-plot(bio11, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio11 Introduced")
+# Plot Western US 
+plot(bio11, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio11 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio11, xlim = c(15,60), ylim = c(30, 50), main = "Bio11 Native")
+plot(bio11, xlim = c(15,60), ylim = c(30, 50), main = "Bio11 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio11)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio11)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio12 <- clim[[4]]
-# Plot Introduced 
-plot(bio12, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio12 Introduced")
+# Plot Western US 
+plot(bio12, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio12 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio12, xlim = c(15,60), ylim = c(30, 50), main = "Bio12 Native")
+plot(bio12, xlim = c(15,60), ylim = c(30, 50), main = "Bio12 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio12)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio12)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio13 <- clim[[5]]
-# Plot Introduced 
-plot(bio13, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio13 Introduced")
+# Plot Western US 
+plot(bio13, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio13 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio13, xlim = c(15,60), ylim = c(30, 50), main = "Bio13 Native")
+plot(bio13, xlim = c(15,60), ylim = c(30, 50), main = "Bio13 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio13)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio13)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio14 <- clim[[6]]
-# Plot Introduced 
-plot(bio14, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio14 Introduced")
+# Plot Western US 
+plot(bio14, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio14 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio14, xlim = c(15,60), ylim = c(30, 50), main = "Bio14 Native")
+plot(bio14, xlim = c(15,60), ylim = c(30, 50), main = "Bio14 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio14)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio14)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 
 ```{r, fig.height=4, fig.width=5}
 bio15 <- clim[[7]]
-# Plot Introduced 
-plot(bio15, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio15 Introduced")
+# Plot Western US 
+plot(bio15, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio15 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio15, xlim = c(15,60), ylim = c(30, 50), main = "Bio15 Native")
+plot(bio15, xlim = c(15,60), ylim = c(30, 50), main = "Bio15 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio15)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio15)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio16 <- clim[[8]]
-# Plot Introduced 
-plot(bio16, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio16 Introduced")
+# Plot Western US 
+plot(bio16, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio16 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio16, xlim = c(15,60), ylim = c(30, 50), main = "Bio16 Native")
+plot(bio16, xlim = c(15,60), ylim = c(30, 50), main = "Bio16 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio16)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio16)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio17 <- clim[[9]]
-# Plot Introduced 
-plot(bio17, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio17 Introduced")
+# Plot Western US 
+plot(bio17, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio17 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio17, xlim = c(15,60), ylim = c(30, 50), main = "Bio17 Native")
+plot(bio17, xlim = c(15,60), ylim = c(30, 50), main = "Bio17 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio17)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio17)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio18 <- clim[[10]]
-# Plot Introduced 
-plot(bio18, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio18 Introduced")
+# Plot Western US 
+plot(bio18, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio18 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio18, xlim = c(15,60), ylim = c(30, 50), main = "Bio18 Native")
+plot(bio18, xlim = c(15,60), ylim = c(30, 50), main = "Bio18 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio18)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio18)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio19 <- clim[[11]]
-# Plot Introduced 
-plot(bio11, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio19 Introduced")
+# Plot Western US 
+plot(bio11, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio19 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio19, xlim = c(15,60), ylim = c(30, 50), main = "Bio19 Native")
+plot(bio19, xlim = c(15,60), ylim = c(30, 50), main = "Bio19 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio19)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio19)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio2 <- clim[[12]]
-# Plot Introduced 
-plot(bio2, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio2 Introduced")
+# Plot Western US 
+plot(bio2, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio2 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio2, xlim = c(15,60), ylim = c(30, 50), main = "Bio2 Native")
+plot(bio2, xlim = c(15,60), ylim = c(30, 50), main = "Bio2 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio2)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 
 EU <- filter(env, Long > 0) %>% 
   select(bio2)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio3 <- clim[[13]]
-# Plot Introduced 
-plot(bio3, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio3 Introduced")
+# Plot Western US 
+plot(bio3, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio3 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio3, xlim = c(15,60), ylim = c(30, 50), main = "Bio3 Native")
+plot(bio3, xlim = c(15,60), ylim = c(30, 50), main = "Bio3 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio3)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio3)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio4 <- clim[[14]]
-# Plot Introduced 
-plot(bio4, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio4 Introduced")
+# Plot Western US 
+plot(bio4, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio4 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio4, xlim = c(15,60), ylim = c(30, 50), main = "Bio4 Native")
+plot(bio4, xlim = c(15,60), ylim = c(30, 50), main = "Bio4 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio4)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio4)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio5 <- clim[[15]]
-# Plot Introduced 
-plot(bio5, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio5 Introduced")
+# Plot Western US 
+plot(bio5, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio5 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio5, xlim = c(15,60), ylim = c(30, 50), main = "Bio5 Native")
+plot(bio5, xlim = c(15,60), ylim = c(30, 50), main = "Bio5 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio5)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio5)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio6 <- clim[[16]]
-# Plot Introduced 
-plot(bio6, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio6 Introduced")
+# Plot Western US 
+plot(bio6, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio6 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio6, xlim = c(15,60), ylim = c(30, 50), main = "Bio6 Native")
+plot(bio6, xlim = c(15,60), ylim = c(30, 50), main = "Bio6 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio6)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio6)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio7 <- clim[[17]]
-# Plot Introduced 
-plot(bio7, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio7 Introduced")
+# Plot Western US 
+plot(bio7, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio7 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio7, xlim = c(15,60), ylim = c(30, 50), main = "Bio7 Native")
+plot(bio7, xlim = c(15,60), ylim = c(30, 50), main = "Bio7 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio7)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio7)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio8 <- clim[[18]]
-# Plot Introduced 
-plot(bio8, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio8 Introduced")
+# Plot Western US 
+plot(bio8, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio8 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio8, xlim = c(15,60), ylim = c(30, 50), main = "Bio8 Native")
+plot(bio8, xlim = c(15,60), ylim = c(30, 50), main = "Bio8 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio8)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio8)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```
 
 ```{r, fig.height=4, fig.width=5}
 bio9 <- clim[[19]]
-# Plot Introduced 
-plot(bio9, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio9 Introduced")
+# Plot Western US 
+plot(bio9, xlim = c(-130,-100), ylim = c(25, 50), main = "Bio9 Western US")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 # Plot Greece/Turkey
-plot(bio9, xlim = c(15,60), ylim = c(30, 50), main = "Bio9 Native")
+plot(bio9, xlim = c(15,60), ylim = c(30, 50), main = "Bio9 Greece + Turkey")
 plot(loc_lat_long,add=T, pch = 16, cex = 0.5)
 
 WUS <- filter(env, Long < 0) %>% 
   select(bio9)
 
-knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Introduced Sampling Sites", )
+knitr::kable(summary(WUS), caption = "Summary of bioclim variable for Western United States Sampling Sites", )
 
 EU <- filter(env, Long > 0) %>% 
   select(bio9)
 
-knitr::kable(summary(EU), caption = "Summary of bioclim variable for Native Sampling Sites")
+knitr::kable(summary(EU), caption = "Summary of bioclim variable for Greece + Turkey Sampling Sites")
 ```

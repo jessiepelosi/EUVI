@@ -1,0 +1,2049 @@
+---
+title: "genotype-environment-associations"
+author: "Jessie Pelosi"
+date: "2025-04-02"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(vegan)
+library(psych)
+library(dplyr)
+library(ggplot2)
+library(VennDiagram)
+library(lfmm)
+library(qvalue)
+library(gridExtra)
+```
+
+# Genotype-Environment Associations 
+
+**Summary**: In this script, we use several methods to identify loci that may be associated with environmental gradients. We perform each analysis in parallel: one in the native range and one in the introduced range. 
+
+## RDA: Redundancy Analysis 
+
+RDA determines how groups of loci covary in response to the multivariate environment, and can detect processes that result in weak, multilocus molecular signatures. RDA is a two-step analysis in which genetic and environmental data are analyzed using multivariate linear regression, producing a matrix of fitted values. Then PCA of the fitted values is used to produce canonical axes, which are linear combinations of the predictors. (From Reatini et al., in prep)
+
+
+### Western United States 
+**Summary**: After selecting only the samples in the Western United States, there is only 11% missing data in the genetic dataset. Very little of the variation appears to be explained by the genetic component (about 2%). There are 80 candidate SNPs from the first 3 RDA axes. 
+
+```{r}
+# load in dataframe with pop env vars for each individual for the individual-based GEA
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+predictors <- env_WUS[,5:9]
+
+# Prepare genotype data
+WUS_genos <- read.table("introduced.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.plink.raw", header = T, sep =" ", row.names=1)
+dim(WUS_genos)
+
+# extract genotypes from dataframe for prelim analysis
+WUS_genos_only <- WUS_genos[,6:7092]
+
+# calculate amount of missing data
+sum(is.na(WUS_genos_only))/(7087*202) # the denominator is the sites*N
+
+# fill missing values (NAs) with overall average for allele frequency variation
+WUS_genos.imp <- apply(WUS_genos_only, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+# double check that there are no longer any NA values
+sum(is.na(WUS_genos.imp)) 
+# genotype data is ready! 
+
+# Need to make sure that predictors are in the same order as the genotype data! 
+# I fixed this by arrganging by the sample name prior to generating the predictor dataframe
+
+WUS.rda <- rda(WUS_genos.imp ~ ., data = predictors, scale = T)
+WUS.rda
+
+# calculate adjusted r^2
+RsquareAdj(WUS.rda) # constrained ordination explains 2% of the genotypic variation
+
+# print eigenvalue summary and plot it
+summary(eigenvals(WUS.rda, model = "constrained"))
+screeplot(WUS.rda)
+
+# plot RDA results for individuals
+
+# axes 1 & 2
+plot(WUS.rda, type="n", scaling=3)
+points(WUS.rda, display="sites", pch=21, cex=1.75, col="black", scaling=3) 
+text(WUS.rda, scaling=3, display="bp", col="black", cex=1.2)        
+#legend("topright", legend=levels(eco), bty="n", col="black", pch=21, cex=1.4, pt.bg=bg)
+
+# axes 1 & 3
+plot(WUS.rda, type="n", scaling=3, choices=c(1,3))
+points(WUS.rda, display="sites", pch=21, cex=1.75, col="black", scaling=3, choices=c(1,3)) 
+text(WUS.rda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+
+# extract loadings of SNPs in ordination space
+load.rda <- scores(WUS.rda, choices=c(1:3), display="species")
+
+# Now extract the SNPs with absolute value of loadings of the 95 percentile of all the SNPs, which 
+# is then weighted based on the eigenvalues of each RDA axis 
+
+# about 41% of the top 5% of SNPs should be from the first axis based on the eigenvalue (54.77 of 131.69 (sum of the first three axes)), 41% of the top 5% of SNPs (354) is ~ 145 SNPs, about 2% of the total SNPs, etc. 
+cand1 <- which(abs(load.rda[,1]) >= quantile(abs(load.rda[,1]), 0.98)) 
+cand2 <- which(abs(load.rda[,2]) >= quantile(abs(load.rda[,2]), 0.985)) # 31% of 5%, ~110 SNPs
+cand3 <- which(abs(load.rda[,3]) >= quantile(abs(load.rda[,3]), 0.987)) # 27% of 5%, ~96 SNPs
+
+# Total number of outlier SNPs
+ncand <- length(cand1) + length(cand2) + length(cand3) #345 candidate snps in Western United States 
+
+# make dataframe with candidate SNPs and correlations with each env variable
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+cand <- unique(cand)
+
+foo <- matrix(nrow=(ncand), ncol=5)  # 5 columns for 5 predictors
+colnames(foo) <- c("bio5","bio6","bio19","bio17","bio2")
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- WUS_genos.imp[,nam]
+  foo[i,] <- apply(predictors,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo) 
+cand_WUS <- cand
+
+# check which of the predictors each SNP is most strongly correlated with
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,9] <- names(which.max(abs(bar[4:8]))) # gives the variable
+  cand[i,10] <- max(abs(bar[4:8]))              # gives the correlation
+}
+
+colnames(cand)[9] <- "predictor"
+colnames(cand)[10] <- "correlation"
+
+Env_Predictors <- levels(as.factor(cand$predictor))
+No_Snps <- as.numeric(table(cand$predictor))
+piedata <- data.frame(Env_Predictors,No_Snps)
+
+# pie chart 
+ggplot(piedata, aes(x="", y=No_Snps, fill=Env_Predictors)) +
+  scale_fill_manual(values=c('#1f78b4','#33a02c','#e31a1c','#ffff33','gold')) +
+  geom_col(color = "black") +
+  geom_text(aes(label = No_Snps),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  ggtitle("Number of candidate SNPs per environmental predictor") +
+  theme_void()
+
+# plot!
+sel <- cand$snp
+env <- cand$predictor
+env[env=="bio5"] <- '#1f78b4'
+env[env=="bio6"] <- '#33a02c'
+env[env=="bio19"] <- '#e31a1c'
+env[env=="bio17"] <- '#ffff33'
+env[env=="bio2"] <- 'gold'
+                
+# color by predictor:
+col.pred <- rownames(WUS.rda$CCA$v) # pull the SNP names
+              
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+              
+col.pred[grep("X",col.pred)] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#e31a1c','gold','red4','#ffff33','#1f78b4','#33a02c')
+
+# axes 1 & 2
+plot(WUS.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(WUS.rda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3)
+points(WUS.rda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3)
+text(WUS.rda, scaling=3, display="bp", col="black", cex=1.2)
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(WUS.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(WUS.rda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(WUS.rda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(WUS.rda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1.2, pt.bg=bg)
+
+```
+
+## Native range: Turkey and Greece 
+**Summary**: After selecting only the samples in the native range (Turkey + Greece), there is only 12% missing data in the genetic dataset. Very little of the variation appears to be explained by the genetic component (about 2%). There are 60 candidate SNPs from the first 3 RDA axes, and over half of the candidates are associated with Bio2.
+
+
+```{r}
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+
+predictors <- env_EU[,5:9]
+# Prepare genotype data
+
+EU_genos <- read.table("native.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.plink.raw", header = T, sep =" ", row.names=1)
+dim(EU_genos)
+
+# extract genotypes from dataframe for prelim analysis
+EU_genos_only <- EU_genos[,6:7092]
+
+# calculate amount of missing data
+sum(is.na(EU_genos_only))/(7087*101) # the denominator is the sites*N
+
+# fill missing values (NAs) with overall average for allele frequency variation
+EU_genos.imp <- apply(EU_genos_only, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+# double check that there are no longer any NA values
+sum(is.na(EU_genos.imp)) 
+# genotype data is ready! 
+
+EU.rda <- rda(EU_genos.imp ~ ., data = predictors, scale = T)
+EU.rda
+
+# calculate adjusted r^2
+RsquareAdj(EU.rda) # constrained ordination explains 5% of the genotypic variation
+
+# print eigenvalue summary and plot it
+summary(eigenvals(EU.rda, model = "constrained"))
+screeplot(EU.rda)
+
+# plot RDA results for individuals
+
+# axes 1 & 2
+plot(EU.rda, type="n", scaling=3)
+points(EU.rda, display="sites", pch=21, cex=1.75, col="black", scaling=3) 
+text(EU.rda, scaling=3, display="bp", col="black", cex=1.2)        
+#legend("topright", legend=levels(eco), bty="n", col="black", pch=21, cex=1.4, pt.bg=bg)
+
+# axes 1 & 3
+plot(EU.rda, type="n", scaling=3, choices=c(1,3))
+points(EU.rda, display="sites", pch=21, cex=1.75, col="black", scaling=3, choices=c(1,3)) 
+text(EU.rda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+
+# extract loadings of SNPs in ordination space
+load.rda <- scores(EU.rda, choices=c(1:3), display="species")
+
+# Now extract the SNPs with absolute value of loadings of the 95 percentile of all the SNPs, which 
+# is then weighted based on the eigenvalues of each RDA axis 
+
+# about 67% of the top 5% of SNPs should be from the first axis based on the eigenvalue (361.2 of 534.3 (sum of the first three axes)), 67% of the top 5% of SNPs (354) is ~ 237 SNPs, about 3.3% of the total SNPs, etc. 
+cand1 <- which(abs(load.rda[,1]) >= quantile(abs(load.rda[,1]), 0.966))
+cand2 <- which(abs(load.rda[,2]) >= quantile(abs(load.rda[,2]), 0.99))
+cand3 <- which(abs(load.rda[,3]) >= quantile(abs(load.rda[,3]), 0.994))
+
+# Total number of outlier SNPs
+ncand <- length(cand1) + length(cand2) + length(cand3) #355 candidate snps in Western United States 
+
+# make dataframe with candidate SNPs and correlations with each env variable
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+
+foo <- matrix(nrow=(ncand), ncol=5)  # 5 columns for 5 predictors
+colnames(foo) <- c("bio5","bio6","bio19","bio17","bio2")
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- EU_genos.imp[,nam]
+  foo[i,] <- apply(predictors,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo) 
+cand_EU <- cand
+
+# check which of the predictors each SNP is most strongly correlated with
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,9] <- names(which.max(abs(bar[4:8]))) # gives the variable
+  cand[i,10] <- max(abs(bar[4:8]))              # gives the correlation
+}
+
+colnames(cand)[9] <- "predictor"
+colnames(cand)[10] <- "correlation"
+
+Env_Predictors <- levels(as.factor(cand$predictor))
+No_Snps <- as.numeric(table(cand$predictor))
+piedata <- data.frame(Env_Predictors,No_Snps)
+
+# pie chart 
+ggplot(piedata, aes(x="", y=No_Snps, fill=Env_Predictors)) +
+  scale_fill_manual(values=c('#1f78b4','#33a02c','#e31a1c','#ffff33','gold')) +
+  geom_col(color = "black") +
+  geom_text(aes(label = No_Snps),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  ggtitle("Number of candidate SNPs per environmental predictor") +
+  theme_void()
+
+# plot!
+sel <- cand$snp
+env <- cand$predictor
+env[env=="bio5"] <- '#1f78b4'
+env[env=="bio6"] <- '#33a02c'
+env[env=="bio19"] <- '#e31a1c'
+env[env=="bio17"] <- '#ffff33'
+env[env=="bio2"] <- 'gold'
+                
+# color by predictor:
+col.pred <- rownames(WUS.rda$CCA$v) # pull the SNP names
+              
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+              
+col.pred[grep("X",col.pred)] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#e31a1c','gold','red4','#ffff33','#1f78b4','#33a02c')
+
+# axes 1 & 2
+plot(EU.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(EU.rda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3)
+points(EU.rda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3)
+text(EU.rda, scaling=3, display="bp", col="black", cex=1.2)
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(EU.rda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(EU.rda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(EU.rda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(EU.rda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1.2, pt.bg=bg)
+```
+
+Here, we compare the two lists to see if the same loci are invovled in response to climate in both range.
+**Summary**: There are 79 candidates in the Western US RDA and 60 candidates in Turkey + Greece RDA, with 1 shared candidate locus. 
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(cand_EU$snp)) #1037
+length(unique(cand_WUS$snp)) #1019
+
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(cand.rda_EU = cand_EU$snp, cand.rda_WUS = cand_WUS$snp)
+
+display_venn(ven, category.names = c("E. Europe" , "W. USA"),fill = c("blue", "red"))
+
+rda_shared <- cand_EU$snp[cand_EU$snp %in% cand_WUS$snp]
+```
+
+## pRDA: Partial Redundancy Analysis 
+
+The Partial Redundancy Analysis (pRDA) incorporates population structure to condition the RDA. Here, we use the first two PC axes to condition the RDA. This is likely very important for the native range, since there is lot of differentiation between the populations in Greece and Turkey. 
+
+### Western United States 
+
+**Summary**: There is very little population structure in the introduced range (Western US), and not much of this variation is explained by the first two PC axes (<3%). In total, there were 345 candidate SNPs, and there is much more equal splitting of candidate SNPs associated with bioclim variables: bio19 (Precipitation of Coldest Quarter, 84 SNPs), bio5 (Max Temperature of Warmest Month, 84 SNPs), bio2 (Mean Diurnal Range, 73 SNPs), bio17 (Precipitation of Driest Quarter, 68 SNPs), and bio6 (Min Temperature of Coldest Month, 36 SNPs). 
+
+```{r}
+library(vcfR)
+library(adegenet)
+
+WUS_vcf <- read.vcfR("introduced.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.recode.vcf")
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+WUS_samples <- popmap3 %>% 
+  dplyr::filter(V3 == "WesternUS")
+
+genind <- vcfR2genind(WUS_vcf)
+pop(genind) <- WUS_samples$V4
+genind
+
+# Run PCA after dealing with missing data, replace missing data with mean value for PC 
+genind.nomissing <- tab(genind, freq=TRUE, NA.method="mean")
+WUS_pca <- dudi.pca(genind.nomissing, center = T, scale = F, nf = 50, scannf = F)
+s.class(WUS_pca$li, fac=pop(genind), col=funky(15), axesell = F, clabel = 0.5)
+add.scatter.eig(WUS_pca$eig[1:25], 3, 1, 2, ratio = 0.25)
+
+pve <- data.frame(PC=1:201,pve =WUS_pca$eig/sum(WUS_pca$eig)*100)
+cumsum(pve$pve)
+ggplot(data = pve, mapping =aes(x=PC, y=pve)) + geom_bar(stat = "identity") + xlim(0,50)
+
+WUS_pcs <- WUS_pca$li
+WUS_pop_str <- subset(WUS_pcs, select = c(Axis1, Axis2))
+
+# load in dataframe with pop env vars for each individual for the individual-based GEA
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+predictors <- env_WUS[,5:9]
+# We need to make sure that samples are in the same order in both dfs...
+WUS_pred_str <- cbind(predictors, WUS_pop_str) 
+
+# run the pRDA
+WUS.prda <- rda(WUS_genos.imp ~ + bio5 + bio6 + bio19 + 
+                 bio17 + bio2 +
+                 Condition(Axis1+Axis2), WUS_pred_str)
+WUS.prda
+
+# print eigenvalue summary and plot it
+summary(eigenvals(WUS.prda, model = "constrained"))
+screeplot(WUS.prda)
+
+# axes 1 & 2
+plot(WUS.prda, type="n", scaling=3)
+points(WUS.prda, display="sites", pch=21, cex=1.75, col="black", scaling=3) 
+text(WUS.prda, scaling=3, display="bp", col="black", cex=1.2)        
+
+# axes 1 & 3
+plot(WUS.prda, type="n", scaling=3, choices=c(1,3))
+points(WUS.prda, display="sites", pch=21, cex=1.75, col="black", scaling=3, choices=c(1,3)) 
+text(WUS.prda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+
+# extract loadings of SNPs in ordination space
+load.rda <- scores(WUS.prda, choices=c(1:3), display="species")
+
+cand1 <- which(abs(load.rda[,1]) >= quantile(abs(load.rda[,1]), 0.9825))
+cand2 <- which(abs(load.rda[,2]) >= quantile(abs(load.rda[,2]), 0.9834))
+cand3 <- which(abs(load.rda[,3]) >= quantile(abs(load.rda[,3]), 0.9840))
+
+# Total number of outlier SNPs
+ncand <- length(cand1) + length(cand2) + length(cand3) #345 candidate snps in Western United States 
+
+# make dataframe with candidate SNPs and correlations with each env variable
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+
+foo <- matrix(nrow=(ncand), ncol=5)  # 5 columns for 5 predictors
+colnames(foo) <- c("bio5","bio6","bio19","bio17","bio2")
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- WUS_genos.imp[,nam]
+  foo[i,] <- apply(predictors,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo) 
+prda.cand_WUS <- cand
+
+# check which of the predictors each SNP is most strongly correlated with
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,9] <- names(which.max(abs(bar[4:8]))) # gives the variable
+  cand[i,10] <- max(abs(bar[4:8]))              # gives the correlation
+}
+
+colnames(cand)[9] <- "predictor"
+colnames(cand)[10] <- "correlation"
+
+Env_Predictors <- levels(as.factor(cand$predictor))
+No_Snps <- as.numeric(table(cand$predictor))
+piedata <- data.frame(Env_Predictors,No_Snps)
+
+# pie chart 
+ggplot(piedata, aes(x="", y=No_Snps, fill=Env_Predictors)) +
+  scale_fill_manual(values=c('#1f78b4','#33a02c','#e31a1c','#ffff33','gold')) +
+  geom_col(color = "black") +
+  geom_text(aes(label = No_Snps),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  ggtitle("Number of candidate SNPs per environmental predictor") +
+  theme_void()
+
+# plot!
+sel <- cand$snp
+env <- cand$predictor
+env[env=="bio5"] <- '#1f78b4'
+env[env=="bio6"] <- '#33a02c'
+env[env=="bio19"] <- '#e31a1c'
+env[env=="bio17"] <- '#ffff33'
+env[env=="bio2"] <- 'gold'
+                
+# color by predictor:
+col.pred <- rownames(WUS.prda$CCA$v) # pull the SNP names
+              
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+              
+col.pred[grep("X",col.pred)] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#e31a1c','gold','red4','#ffff33','#1f78b4','#33a02c')
+
+# axes 1 & 2
+plot(WUS.prda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(WUS.prda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3)
+points(WUS.prda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3)
+text(WUS.prda, scaling=3, display="bp", col="black", cex=1.2)
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(WUS.prda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(WUS.prda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(WUS.prda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(WUS.prda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1.2, pt.bg=bg)
+```
+### Europe (Turkey and Greece)
+
+**Summary**: There is more population structure in the native range (Turkey + Greece), and an ok proportion of this variation is explained by the first two PC axes (~10%). In total, there were 363 candidate SNPs, and there is much more equal splitting of candidate SNPs associated with bioclim variables: bio6 (Min Temperature of Coldest Month, 76 SNPs), bio17 (Precipitation of Driest Quarter, 83 SNPs), bio5 (Max Temperature of Warmest Month, 78 SNPs), bio2 (Mean Diurnal Range, 75 SNPs), bio19 (Precipitation of Coldest Quarter, 51 SNPs). Note that this is nearly the opposite order compared to the introduced range!
+```{r}
+library(vcfR)
+library(adegenet)
+
+EU_vcf <- read.vcfR("native.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.recode.vcf")
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+EU_samples <- popmap3 %>% 
+  dplyr::filter(V3 == "Turkey" | V3 == "Greece")
+
+genind <- vcfR2genind(EU_vcf)
+pop(genind) <- EU_samples$V4
+genind
+
+# Run PCA after dealing with missing data, replace missing data with mean  
+genind.nomissing <- tab(genind, freq=TRUE, NA.method="mean")
+EU_pca <- dudi.pca(genind.nomissing, center = T, scale = F, nf = 50, scannf = F)
+s.class(EU_pca$li, fac=pop(genind), col=funky(15), axesell = F, clabel = 0.5)
+add.scatter.eig(EU_pca$eig[1:25], 3, 1, 2, ratio = 0.25)
+
+pve <- data.frame(PC=1:100,pve = EU_pca$eig/sum(EU_pca$eig)*100)
+cumsum(pve$pve)
+ggplot(data = pve, mapping =aes(x=PC, y=pve)) + geom_bar(stat = "identity") + xlim(0,50)
+
+EU_pcs <- EU_pca$li
+EU_pop_str <- subset(EU_pcs, select = c(Axis1, Axis2))
+
+# load in dataframe with pop env vars for each individual for the individual-based GEA
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+predictors <- env_EU[,5:9]
+
+# We need to make sure that samples are in the same order in both dfs...
+EU_pred_str <- cbind(predictors, EU_pop_str) 
+
+# run the pRDA
+EU.prda <- rda(EU_genos.imp ~ + bio5 + bio6 + bio19 + 
+                 bio17 + bio2 +
+                 Condition(Axis1+Axis2), EU_pred_str)
+EU.prda
+
+# print eigenvalue summary and plot it
+summary(eigenvals(EU.prda, model = "constrained"))
+screeplot(EU.prda)
+
+# axes 1 & 2
+plot(EU.prda, type="n", scaling=3)
+points(EU.prda, display="sites", pch=21, cex=1.75, col="black", scaling=3) 
+text(EU.prda, scaling=3, display="bp", col="black", cex=1.2)        
+
+# axes 1 & 3
+plot(EU.prda, type="n", scaling=3, choices=c(1,3))
+points(EU.prda, display="sites", pch=21, cex=1.75, col="black", scaling=3, choices=c(1,3)) 
+text(EU.prda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+
+# extract loadings of SNPs in ordination space
+load.rda <- scores(EU.prda, choices=c(1:3), display="species")
+
+cand1 <- which(abs(load.rda[,1]) >= quantile(abs(load.rda[,1]), 0.9810))
+cand2 <- which(abs(load.rda[,2]) >= quantile(abs(load.rda[,2]), 0.9840))
+cand3 <- which(abs(load.rda[,3]) >= quantile(abs(load.rda[,3]), 0.9850))
+
+# Total number of outlier SNPs
+ncand <- length(cand1) + length(cand2) + length(cand3) #1478 candidate snps in Western United States 
+
+# make dataframe with candidate SNPs and correlations with each env variable
+cand1 <- cbind.data.frame(rep(1,times=length(cand1)), names(cand1), unname(cand1))
+cand2 <- cbind.data.frame(rep(2,times=length(cand2)), names(cand2), unname(cand2))
+cand3 <- cbind.data.frame(rep(3,times=length(cand3)), names(cand3), unname(cand3))
+
+colnames(cand1) <- colnames(cand2) <- colnames(cand3) <- c("axis","snp","loading")
+
+cand <- rbind(cand1, cand2, cand3)
+cand$snp <- as.character(cand$snp)
+
+foo <- matrix(nrow=(ncand), ncol=5)  # 5 columns for 5 predictors
+colnames(foo) <- c("bio5","bio6","bio19","bio17","bio2")
+
+for (i in 1:length(cand$snp)) {
+  nam <- cand[i,2]
+  snp.gen <- EU_genos.imp[,nam]
+  foo[i,] <- apply(predictors,2,function(x) cor(x,snp.gen))
+}
+
+cand <- cbind.data.frame(cand,foo) 
+prda.cand_EU <- cand
+
+# check which of the predictors each SNP is most strongly correlated with
+for (i in 1:length(cand$snp)) {
+  bar <- cand[i,]
+  cand[i,9] <- names(which.max(abs(bar[4:8]))) # gives the variable
+  cand[i,10] <- max(abs(bar[4:8]))              # gives the correlation
+}
+
+colnames(cand)[9] <- "predictor"
+colnames(cand)[10] <- "correlation"
+
+Env_Predictors <- levels(as.factor(cand$predictor))
+No_Snps <- as.numeric(table(cand$predictor))
+piedata <- data.frame(Env_Predictors,No_Snps)
+
+# pie chart 
+ggplot(piedata, aes(x="", y=No_Snps, fill=Env_Predictors)) +
+  scale_fill_manual(values=c('#1f78b4','#33a02c','#e31a1c','#ffff33','gold')) +
+  geom_col(color = "black") +
+  geom_text(aes(label = No_Snps),
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  ggtitle("Number of candidate SNPs per environmental predictor") +
+  theme_void()
+
+# plot!
+sel <- cand$snp
+env <- cand$predictor
+env[env=="bio5"] <- '#1f78b4'
+env[env=="bio6"] <- '#33a02c'
+env[env=="bio19"] <- '#e31a1c'
+env[env=="bio17"] <- '#ffff33'
+env[env=="bio2"] <- 'gold'
+                
+# color by predictor:
+col.pred <- rownames(EU.prda$CCA$v) # pull the SNP names
+              
+for (i in 1:length(sel)) {           # color code candidate SNPs
+  foo <- match(sel[i],col.pred)
+  col.pred[foo] <- env[i]
+}
+              
+col.pred[grep("X",col.pred)] <- '#f1eef6' # non-candidate SNPs
+empty <- col.pred
+empty[grep("#f1eef6",empty)] <- rgb(0,1,0, alpha=0) # transparent
+empty.outline <- ifelse(empty=="#00FF0000","#00FF0000","gray32")
+bg <- c('#e31a1c','gold','red4','#ffff33','#1f78b4','#33a02c')
+
+# axes 1 & 2
+plot(EU.prda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1))
+points(EU.prda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3)
+points(EU.prda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3)
+text(EU.prda, scaling=3, display="bp", col="black", cex=1.2)
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1, pt.bg=bg)
+
+# axes 1 & 3
+plot(EU.prda, type="n", scaling=3, xlim=c(-1,1), ylim=c(-1,1), choices=c(1,3))
+points(EU.prda, display="species", pch=21, cex=1.3, col="gray32", bg=col.pred, scaling=3, choices=c(1,3))
+points(EU.prda, display="species", pch=21, cex=1.3, col=empty.outline, bg=empty, scaling=3, choices=c(1,3))
+text(EU.prda, scaling=3, display="bp", col="black", cex=1.2, choices=c(1,3))
+#legend("bottomright", legend=c("TEMPannual","TEMPseasonality","TEMPmax","TEMPdriestquarter","PPTannual","PPTseasonality"), bty="n", col="black", pch=21, cex=1.2, pt.bg=bg)
+```
+Here, we compare the two lists to see if the same loci are involved in response to climate in both range.
+
+**Summary**: There are 331 candidates in the Western US pRDA and 339 candidates in Turkey + Greece pRDA, with 36 shared candidate loci! 
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(prda.cand_EU$snp)) #332- note that this is different b/c SNPs can hit multiple RDA axes
+length(unique(prda.cand_WUS$snp)) #918
+ 
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(EasternEurope = prda.cand_EU$snp, WesternUS = prda.cand_WUS$snp)
+display_venn(ven, category.names = c("EasternEurope" , "WesternUS"),fill = c("blue", "red"))
+
+prda_shared <- prda.cand_EU$snp[prda.cand_EU$snp %in% prda.cand_WUS$snp]
+#unique(prda_shared)
+
+```
+## LFMM: LFMM is a univariate test, which means that it builds a model for each SNP and each predictor variable.
+From: https://bookdown.org/hhwagner1/LandGenCourse_book/WE_11.html
+
+We first have to determine the optimal K value - we will use a PCA on the genomic data and compare to the 'broken stick criterion'. The LFMM is a univariate test, so we can't do an analysis on all 5 bioclim variables at one time, unless we do a PCA on them and then use the first PC axis in the analysis. However, we want to be able to compare these results to the pRDA results, so we will do a LFMM for each bioclim variable in each range (5 bioclim vars x 2 ranges = 10 total LFMM tests). Since within each LFMM analysis, every SNP is being tested against the environmental variable, we need to adjust the p-values using a false discovery rate (FDR) correction and can assess the calibration by looking at the genomic inflation factor (GIF), where a GIF close to 1 indicates an appropriately calibrated test.  
+
+### Western United States:
+**Summary**: We will use K=1 for the Western US since there is very little population structure in the PCA. There were a total of 6 SNPs with q-values < 0.1 after correcting for False Discovery Rate. 5 of these SNPs are associated with Bio2, and one is associatd with Bio19.  
+
+- Bio5: 
+  - GIF = 1.132, close to 1
+  - #SNPS w/ P-value < 0.01 = 63
+  - #SNPS w/ Q-value < 0.1 = 0
+- Bio6: 
+  - GIF = 1.577, elevated 
+  - #SNPS w/ P-value < 0.01 = 61
+  - #SNPS w/ Q-value < 0.1 = 0
+- Bio2: 
+  - GIF = 1.20, slightly elevated 
+  - #SNPS w/ P-value < 0.01 = 99
+  - #SNPS w/ Q-value < 0.1 = 5
+- Bio17: 
+  - GIF = 1.57, elevated
+  - #SNPS w/ P-value < 0.01 = 64
+  - #SNPS w/ Q-value < 0.1 = 0
+- Bio19: 
+  - GIF = 1.25, elevated 
+  - #SNPS w/ P-value < 0.01 = 69
+  - #SNPS w/ Q-value < 0.1 = 1
+
+
+```{r}
+# load in dataframe with pop env vars for each individual for the individual-based GEA
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+predictors <- env_WUS[,5:9]
+
+# Prepare genotype data
+WUS_genos <- read.table("introduced.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.plink.raw", header = T, sep =" ", row.names=1)
+dim(WUS_genos)
+
+# extract genotypes from dataframe for prelim analysis
+WUS_genos_only <- WUS_genos[,6:7092]
+
+# calculate amount of missing data
+sum(is.na(WUS_genos_only))/(7087*202) # the denominator is the sites*N
+
+# fill missing values (NAs) with overall average for allele frequency variation
+WUS_genos.imp <- apply(WUS_genos_only, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+# double check that there are no longer any NA values
+sum(is.na(WUS_genos.imp)) 
+# genotype data is ready! 
+
+# Need to make sure that predictors are in the same order as the genotype data! 
+# I fixed this by arranging by the sample name prior to generating the predictor dataframe
+
+#WUS.pca <- rda(WUS_genos.imp, scale = T)
+#screeplot(WUS.pca, main = "Screeplot of RDA with Broken Stick", bstick = T, type = "barplot")
+
+K <- 1
+
+
+# LFMM on BIO5 
+WUS.lfmm.bio5 <- lfmm_ridge(Y=WUS_genos.imp, X=env_WUS$bio5, K = K)
+
+WUS.lfmm.bio5.test <- lfmm_test(Y=WUS_genos.imp, X=env_WUS$bio5, lfmm = WUS.lfmm.bio5, calibrate = "gif")
+WUS.lfmm.bio5.test$gif
+
+hist(WUS.lfmm.bio5.test$pvalue[,1], main = "Unadjusted P-values")
+hist(WUS.lfmm.bio5.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(WUS.lfmm.bio5.test$calibrated.pvalue< 0.01)) #129
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+WUS.lfmm.bio5.test.qv <- qvalue(WUS.lfmm.bio5.test$calibrated.pvalue)$qvalues
+length(which(WUS.lfmm.bio5.test.qv < 0.1)) #0
+
+
+# LFMM on BIO6
+WUS.lfmm.bio6 <- lfmm_ridge(Y=WUS_genos.imp, X=env_WUS$bio6, K = K)
+
+WUS.lfmm.bio6.test <- lfmm_test(Y=WUS_genos.imp, X=env_WUS$bio6, lfmm = WUS.lfmm.bio6, calibrate = "gif")
+WUS.lfmm.bio6.test$gif # this is slightly elevated, 1.577
+
+hist(WUS.lfmm.bio6.test$pvalue[,1], main = "Unadjusted P-values")
+hist(WUS.lfmm.bio6.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(WUS.lfmm.bio6.test$calibrated.pvalue< 0.01)) #61
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+WUS.lfmm.bio6.test.qv <- qvalue(WUS.lfmm.bio6.test$calibrated.pvalue)$qvalues
+length(which(WUS.lfmm.bio6.test.qv < 0.1)) #0
+
+
+# LFMM on BIO2
+WUS.lfmm.bio2 <- lfmm_ridge(Y=WUS_genos.imp, X=env_WUS$bio2, K = K)
+
+WUS.lfmm.bio2.test <- lfmm_test(Y=WUS_genos.imp, X=env_WUS$bio2, lfmm = WUS.lfmm.bio2, calibrate = "gif")
+WUS.lfmm.bio2.test$gif # this is slightly elevated, but not too bad, 1.20
+
+hist(WUS.lfmm.bio2.test$pvalue[,1], main = "Unadjusted P-values")
+hist(WUS.lfmm.bio2.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(WUS.lfmm.bio2.test$calibrated.pvalue< 0.01)) #99
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+WUS.lfmm.bio2.test.qv <- qvalue(WUS.lfmm.bio2.test$calibrated.pvalue)$qvalues
+length(which(WUS.lfmm.bio2.test.qv < 0.1)) #5
+
+
+# LFMM on BIO17
+WUS.lfmm.bio17 <- lfmm_ridge(Y=WUS_genos.imp, X=env_WUS$bio17, K = K)
+
+WUS.lfmm.bio17.test <- lfmm_test(Y=WUS_genos.imp, X=env_WUS$bio17, lfmm = WUS.lfmm.bio17, calibrate = "gif")
+WUS.lfmm.bio17.test$gif # this is elevated, 1.57
+
+hist(WUS.lfmm.bio17.test$pvalue[,1], main = "Unadjusted P-values")
+hist(WUS.lfmm.bio17.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(WUS.lfmm.bio17.test$calibrated.pvalue< 0.01)) #64
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+WUS.lfmm.bio17.test.qv <- qvalue(WUS.lfmm.bio17.test$calibrated.pvalue)$qvalues
+length(which(WUS.lfmm.bio17.test.qv < 0.1)) #0
+
+
+# LFMM on BIO19
+WUS.lfmm.bio19 <- lfmm_ridge(Y=WUS_genos.imp, X=env_WUS$bio19, K = K)
+
+WUS.lfmm.bio19.test <- lfmm_test(Y=WUS_genos.imp, X=env_WUS$bio19, lfmm = WUS.lfmm.bio19, calibrate = "gif")
+WUS.lfmm.bio19.test$gif # this is slightly elevated, but not too bad, 1.25
+
+hist(WUS.lfmm.bio19.test$pvalue[,1], main = "Unadjusted P-values")
+hist(WUS.lfmm.bio19.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(WUS.lfmm.bio19.test$calibrated.pvalue< 0.01)) #69
+ 
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+WUS.lfmm.bio19.test.qv <- qvalue(WUS.lfmm.bio19.test$calibrated.pvalue)$qvalues
+length(which(WUS.lfmm.bio19.test.qv < 0.1)) #1
+
+# bio19
+t <- as.data.frame(WUS.lfmm.bio19.test.qv)
+t$snp <- rownames(t)
+WUS.lfmm.bio19.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio 2
+t <- as.data.frame(WUS.lfmm.bio2.test.qv)
+t$snp <- rownames(t)
+WUS.lfmm.bio2.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio5
+t <- as.data.frame(WUS.lfmm.bio5.test.qv)
+t$snp <- rownames(t)
+WUS.lfmm.bio5.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio6
+t <- as.data.frame(WUS.lfmm.bio6.test.qv)
+t$snp <- rownames(t)
+WUS.lfmm.bio6.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio17
+t <- as.data.frame(WUS.lfmm.bio17.test.qv)
+t$snp <- rownames(t)
+WUS.lfmm.bio17.test.qv.sig <- filter(t, V1 < 0.1)
+
+sig <- full_join(WUS.lfmm.bio19.test.qv.sig, WUS.lfmm.bio2.test.qv.sig, by = "snp")
+sig <- full_join(sig,WUS.lfmm.bio5.test.qv.sig, by = "snp")
+sig <- full_join(sig,WUS.lfmm.bio6.test.qv.sig, by = "snp")
+WUS.sig <- full_join(sig,WUS.lfmm.bio17.test.qv.sig, by ="snp")
+
+```
+
+
+### Europe (Turkey + Greece):
+**Summary**: We will use K=2 for the native since the first two we find very strong population structure in the ADMIXUTRE plots when K=2 and K=3 that separate out Greece and Turkey. This approach identifies 58 candidate SNPs, of which 14 are associated with Bio5, 22 are associateed with Bio6, 2 are associated with Bio2, and 20 are associated with Bio19.
+
+- Bio5: 
+  - GIF = 1.21, slightly elevated 
+  - #SNPS w/ P-value < 0.01 = 91
+  - #SNPS w/ Q-value < 0.1 = 14
+- Bio6: 
+  - GIF = 1.54, elevated
+  - #SNPS w/ P-value < 0.01 = 136
+  - #SNPS w/ Q-value < 0.1 = 22
+- Bio2: 
+  - GIF = 1.19, close to 1, but slightly elevated
+  - #SNPS w/ P-value < 0.01 = 73
+  - #SNPS w/ Q-value < 0.1 = 2
+- Bio17:
+  - GIF = 1.94
+  - #SNPS w/ P-value < 0.01 = 59
+  - #SNPS w/ Q-value < 0.1 = 0
+- Bio19:
+  - GIF = 1.52, suppressed values
+  - #SNPS w/ P-value < 0.01 = 148
+  - #SNPS w/ Q-value < 0.1 = 20
+
+```{r}
+# load in dataframe with pop env vars for each individual for the individual-based GEA
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample)
+predictors <- env_EU[,5:9]
+
+# Prepare genotype data
+EU_genos <- read.table("native.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.plink.raw", header = T, sep =" ", row.names=1)
+dim(EU_genos)
+
+# extract genotypes from dataframe for prelim analysis
+EU_genos_only <- EU_genos[,6:7092]
+
+# calculate amount of missing data
+sum(is.na(EU_genos_only))/(7087*101) # the denominator is the sites*N
+
+# fill missing values (NAs) with overall average for allele frequency variation
+EU_genos.imp <- apply(EU_genos_only, 2, function(x) replace(x, is.na(x), as.numeric(names(which.max(table(x))))))
+# double check that there are no longer any NA values
+sum(is.na(EU_genos.imp)) 
+# genotype data is ready! 
+
+# Need to make sure that predictors are in the same order as the genotype data! 
+# I fixed this by aranging by the sample name prior to generating the predictor dataframe
+
+#EU.pca <- rda(EU_genos.imp, scale = T)
+#screeplot(EU.pca, main = "Screeplot of RDA with Broken Stick", bstick = T, type = "barplot")
+
+K <- 2
+
+
+# LFMM on BIO5 
+EU.lfmm.bio5 <- lfmm_ridge(Y=EU_genos.imp, X=env_EU$bio5, K = K)
+
+EU.lfmm.bio5.test <- lfmm_test(Y=EU_genos.imp, X=env_EU$bio5, lfmm = EU.lfmm.bio5, calibrate = "gif")
+EU.lfmm.bio5.test$gif #1.21
+
+hist(EU.lfmm.bio5.test$pvalue[,1], main = "Unadjusted P-values")
+hist(EU.lfmm.bio5.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(EU.lfmm.bio5.test$calibrated.pvalue< 0.01)) # 91
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+EU.lfmm.bio5.test.qv <- qvalue(EU.lfmm.bio5.test$calibrated.pvalue)$qvalues
+length(which(EU.lfmm.bio5.test.qv < 0.1)) #14
+
+
+# LFMM on BIO6
+EU.lfmm.bio6 <- lfmm_ridge(Y=EU_genos.imp, X=env_EU$bio6, K = K)
+
+EU.lfmm.bio6.test <- lfmm_test(Y=EU_genos.imp, X=env_EU$bio6, lfmm = EU.lfmm.bio6, calibrate = "gif")
+EU.lfmm.bio6.test$gif # 1.54
+
+hist(EU.lfmm.bio6.test$pvalue[,1], main = "Unadjusted P-values")
+hist(EU.lfmm.bio6.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(EU.lfmm.bio6.test$calibrated.pvalue< 0.01)) #136
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+EU.lfmm.bio6.test.qv <- qvalue(EU.lfmm.bio6.test$calibrated.pvalue)$qvalues
+length(which(EU.lfmm.bio6.test.qv < 0.1)) #22
+
+
+# LFMM on BIO2
+EU.lfmm.bio2 <- lfmm_ridge(Y=EU_genos.imp, X=env_EU$bio2, K = K)
+
+EU.lfmm.bio2.test <- lfmm_test(Y=EU_genos.imp, X=env_EU$bio2, lfmm = EU.lfmm.bio2, calibrate = "gif")
+EU.lfmm.bio2.test$gif # this is slightly elevated, but not too bad, 1.19
+
+hist(EU.lfmm.bio2.test$pvalue[,1], main = "Unadjusted P-values")
+hist(EU.lfmm.bio2.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(EU.lfmm.bio2.test$calibrated.pvalue< 0.01)) #73
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+EU.lfmm.bio2.test.qv <- qvalue(EU.lfmm.bio2.test$calibrated.pvalue)$qvalues
+length(which(EU.lfmm.bio2.test.qv < 0.1)) #2
+
+
+# LFMM on BIO17
+EU.lfmm.bio17 <- lfmm_ridge(Y=EU_genos.imp, X=env_EU$bio17, K = K)
+
+EU.lfmm.bio17.test <- lfmm_test(Y=EU_genos.imp, X=env_EU$bio17, lfmm = EU.lfmm.bio17, calibrate = "gif")
+EU.lfmm.bio17.test$gif # this is highly elevated, 1.94
+
+hist(EU.lfmm.bio17.test$pvalue[,1], main = "Unadjusted P-values")
+hist(EU.lfmm.bio17.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(EU.lfmm.bio17.test$calibrated.pvalue< 0.01)) #59
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+EU.lfmm.bio17.test.qv <- qvalue(EU.lfmm.bio17.test$calibrated.pvalue)$qvalues
+length(which(EU.lfmm.bio17.test.qv < 0.1)) #0
+
+
+# LFMM on BIO19
+EU.lfmm.bio19 <- lfmm_ridge(Y=EU_genos.imp, X=env_EU$bio19, K = K)
+
+EU.lfmm.bio19.test <- lfmm_test(Y=EU_genos.imp, X=env_EU$bio19, lfmm = EU.lfmm.bio19, calibrate = "gif")
+EU.lfmm.bio19.test$gif # 1.52
+
+hist(EU.lfmm.bio19.test$pvalue[,1], main = "Unadjusted P-values")
+hist(EU.lfmm.bio19.test$calibrated.pvalue[,1], main = "GIF-Adjusted P-Values")
+
+length(which(EU.lfmm.bio19.test$calibrated.pvalue< 0.01)) #148
+
+# Convert the p-values into q-values, which are a measure of each SNP's significance after accounting for the FDR correction
+EU.lfmm.bio19.test.qv <- qvalue(EU.lfmm.bio19.test$calibrated.pvalue)$qvalues
+length(which(EU.lfmm.bio19.test.qv < 0.1)) #20
+
+# bio19
+t <- as.data.frame(EU.lfmm.bio19.test.qv)
+t$snp <- rownames(t)
+EU.lfmm.bio19.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio 2
+t <- as.data.frame(EU.lfmm.bio2.test.qv)
+t$snp <- rownames(t)
+EU.lfmm.bio2.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio5
+t <- as.data.frame(EU.lfmm.bio5.test.qv)
+t$snp <- rownames(t)
+EU.lfmm.bio5.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio6
+t <- as.data.frame(EU.lfmm.bio6.test.qv)
+t$snp <- rownames(t)
+EU.lfmm.bio6.test.qv.sig <- filter(t, V1 < 0.1)
+
+# bio17
+t <- as.data.frame(EU.lfmm.bio17.test.qv)
+t$snp <- rownames(t)
+EU.lfmm.bio17.test.qv.sig <- filter(t, V1 < 0.1)
+
+sig <- full_join(EU.lfmm.bio19.test.qv.sig, EU.lfmm.bio2.test.qv.sig, by = "snp")
+sig <- full_join(sig,EU.lfmm.bio5.test.qv.sig, by = "snp")
+sig <- full_join(sig,EU.lfmm.bio6.test.qv.sig, by = "snp")
+EU.sig <- full_join(sig,EU.lfmm.bio17.test.qv.sig, by ="snp")
+
+```
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(EU.sig$snp)) #45 unique SNPs
+length(unique(WUS.sig$snp)) #6 unique SNPs
+ 
+# Plot a venn diagram of the RDA results 
+#venn.diagram(x = list(EU.sig$snp, WUS.sig$snp), filename = "weevils_lfmm.png", 
+#             category.names = c("Europe", "Western US"), 
+#             output =T, fill = c("Blue", "Red"), 
+#             cat.fontfamily = "sans", cat.cex = 0.6, cat.fontface = "bold", cat.default.pos = "outer")
+
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(LFMM.EU = EU.sig$snp, LFMM.WUS = WUS.sig$snp)
+
+display_venn(ven, category.names = c("E. Europe" , "W. USA"),fill = c("blue", "red"))
+
+```
+
+## GF-RAW: Gradient Forest (GF) is a machine-learning approach to identify outliers in genomic datasets associated with environmental variables. We will also use some functions from Fitzpatrick et al. 2021. This approach uses the raw population allele frequencies without correcting for population structure in the dataset. 
+
+### Western US:
+**Summary**: 
+
+
+```{r, warning=FALSE}
+# These libraries were a pain to install on Mac w/ Apple chip. Had to reset the compiler path variables to 
+# homebrew path and then it worked okay. 
+
+#install.packages("~/Downloads/extendedForest_1.6.2.tar.gz", repos = NULL, type = "source")
+#install.packages("~/Downloads/gradientForest_0.1-37.tar.gz", repo = NULL, type = "source")
+
+library(gradientForest)
+
+# Set path for allele frequency data. For this: should be a .csv with the populations across the top row and each is a SNP with the frequency of that SNP for a population in the corresponding cell 
+library(vcfR)
+library(adegenet)
+
+WUS_vcf <- read.vcfR("introduced.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.recode.vcf")
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+WUS_samples <- popmap3 %>% 
+  dplyr::filter(V3 == "WesternUS")
+
+genind <- vcfR2genind(WUS_vcf)
+pop(genind) <- WUS_samples$V2
+genind
+
+# Convert genind to genpop, so that we can calculate the allele freqs for each population! 
+genpop <- genind2genpop(genind)
+allele.freq.WUS <- as.data.frame(makefreq(genpop))
+colnames(allele.freq.WUS) <- make.names(colnames(allele.freq.WUS))
+t.allele.freq.WUS <- as.data.frame(t(allele.freq.WUS))
+# Add a new column for allele name
+t.allele.freq.WUS$allele.name <- rownames(t.allele.freq.WUS)
+# Get a summary column that has the overall frequency of the allele for each row
+t.allele.freq.WUS <- mutate(t.allele.freq.WUS, overall.freq = rowMeans(t.allele.freq.WUS[,-82]))
+# Remove the last two characters of the allele name in the dataframe 
+t.allele.freq.WUS$allele.name <-substr(t.allele.freq.WUS$allele.name,1,nchar(t.allele.freq.WUS$allele.name)-2)
+# Retain the allele that represents the minor allele frequency for each locus 
+t.allele.freq.dedup.WUS <- t.allele.freq.WUS %>% 
+  group_by(allele.name) %>% 
+  arrange(overall.freq) %>% 
+  filter(row_number() == 1)
+
+t.allele.freq.dedup.WUS.onlyfreq <- t.allele.freq.dedup.WUS %>% 
+  ungroup() %>% 
+  dplyr::select(-c(allele.name, overall.freq))
+
+WUS.allele.freq <- t(t.allele.freq.dedup.WUS.onlyfreq) 
+colnames(WUS.allele.freq) <- t.allele.freq.dedup.WUS$allele.name
+
+# Get environmental data. We will continue to use the 'env' object for this. The object should be a row for each population and a column for each variable, so we will get the mean value for each bioclim variable for each population (should actually be the same)
+
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all s <- amples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_WUS) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+#b.env_WUS <- env_WUS %>% 
+#  select(-c(pop_code))
+#write.table(file = "env_WUS.txt", b.env_WUS, quote = F, row.names = F, col.names = F, sep = "\t")
+
+# Names of variables used in fitting GF
+predictors <- c("bio5", "bio6", "bio19", "bio17", "bio2")
+
+# In GF, the maximum number of splits is defined by the following according to the suggestions of the authors:
+maxLevel <- log2(0.368*nrow(env_WUS)/2)
+
+# Now, run the GF model
+
+gfSNPs.WUS <- gradientForest(cbind(WUS.allele.freq , env_WUS), predictor.vars = predictors, 
+               response.vars = colnames(WUS.allele.freq), ntree = 500, maxLevel = maxLevel,
+               trace = T, corr.threshold = 0.5)
+
+plot(gfSNPs.WUS, plot.type = "Overall.Importance")
+plot(gfSNPs.WUS, plot.type = "Split.Density")
+
+# Now we can extract the importance (R2) values and format as table. We have to do this manually, 
+# since the function only works on a modified GF output when each SNP is run independently. We 
+# want to get a data.frame with a row for each SNP with R2 > 0 and a column with the R2 for each 
+# predictor variable. 
+
+gfSNPs.R2.WUS <- t(gfSNPs.WUS$imp.rsq) # 721 SNPs w/ R2 > 0 
+
+Perc <- quantile(gfSNPs.R2.WUS, 0.95)
+
+# Now I need to get the names of these outlier SNPs (138 SNPs)
+gf.SNPs.R2.WUS.df <- as.data.frame(gfSNPs.R2.WUS)
+gf.SNPs.R2.WUS.df.outliers <- gf.SNPs.R2.WUS.df %>% 
+  filter(bio5 >= 0.04106876 | bio6 >= 0.04106876 | bio17 >= 0.04106876 | bio19 >= 0.04106876 | bio2 >= 0.04106876)
+
+maxColumnNames <- as.data.frame(apply(gf.SNPs.R2.WUS.df.outliers, 1, function(row) colnames(gf.SNPs.R2.WUS.df.outliers)[which.max(row)]))
+
+GFRaw.WUS.cand <- rownames(gf.SNPs.R2.WUS.df.outliers)
+
+```
+
+## Turkey + Greece
+**Summary**: 
+
+```{r, warning=FALSE}
+# These libraries were a pain to install on Mac w/ Apple chip. Had to reset the compiler path variables to 
+# homebrew path and then it worked okay. 
+
+#install.packages("~/Downloads/extendedForest_1.6.2.tar.gz", repos = NULL, type = "source")
+#install.packages("~/Downloads/gradientForest_0.1-37.tar.gz", repo = NULL, type = "source")
+
+library(gradientForest)
+
+# Set path for allele frequency data. For this: should be a .csv with the populations across the top row and each is a SNP with the frequency of that SNP for a population in the corresponding cell 
+library(vcfR)
+library(adegenet)
+
+EU_vcf <- read.vcfR("native.populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.recode.vcf")
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+EU_samples <- popmap3 %>% 
+  dplyr::filter(V3 == "Turkey" | V3 == "Greece")
+
+genind <- vcfR2genind(EU_vcf)
+pop(genind) <- EU_samples$V2
+genind
+
+# Convert genind to genpop, so that we can calculate the allele freqs for each population! 
+genpop <- genind2genpop(genind)
+allele.freq.EU <- as.data.frame(makefreq(genpop))
+colnames(allele.freq.EU) <- make.names(colnames(allele.freq.EU))
+t.allele.freq.EU <- as.data.frame(t(allele.freq.EU))
+# Add a new column for allele name
+t.allele.freq.EU$allele.name <- rownames(t.allele.freq.EU)
+# Get a summary column that has the overall frequency of the allele for each row
+t.allele.freq.EU <- mutate(t.allele.freq.EU, overall.freq = rowMeans(t.allele.freq.EU[,-41]))
+# Remove the last two characters of the allele name in the dataframe 
+t.allele.freq.EU$allele.name <-substr(t.allele.freq.EU$allele.name,1,nchar(t.allele.freq.EU$allele.name)-2)
+# Retain the allele that represents the minor allele frequency for each locus 
+t.allele.freq.dedup.EU <- t.allele.freq.EU %>% 
+  group_by(allele.name) %>% 
+  arrange(overall.freq) %>% 
+  filter(row_number() == 1)
+
+t.allele.freq.dedup.EU.onlyfreq <- t.allele.freq.dedup.EU %>% 
+  ungroup() %>% 
+  dplyr::select(-c(allele.name, overall.freq))
+
+EU.allele.freq <- t(t.allele.freq.dedup.EU.onlyfreq) 
+colnames(EU.allele.freq) <- t.allele.freq.dedup.EU$allele.name
+
+# Get environmental data. We will continue to use the 'env' object for this. The object should be a row for each population and a column for each variable, so we will get the mean value for each bioclim variable for each population (should actually be the same)
+
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_EU) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+# Transpose the df and output. We will use this for BAYENV (not for GF-raw)
+#t.env_EU <- t(env_EU)
+#write.table(file = "env_EU.txt", t.env_EU, quote = F, row.names = F, col.names = F)
+
+# Names of variables used in fitting GF
+predictors <- c("bio5", "bio6", "bio19", "bio17", "bio2")
+
+# In GF, the maximum number of splits is defined by the following according to the suggestions of the authors:
+maxLevel <- log2(0.368*nrow(env_EU)/2)
+
+# Now, run the GF model
+
+gfSNPs.EU <- gradientForest(cbind(EU.allele.freq, env_EU), predictor.vars = predictors, 
+               response.vars = colnames(EU.allele.freq), ntree = 500, maxLevel = maxLevel,
+               trace = T, corr.threshold = 0.5)
+
+
+plot(gfSNPs.EU, plot.type = "Overall.Importance")
+plot(gfSNPs.EU, plot.type = "Split.Density")
+
+# Now we can extract the importance (R2) values and format as table. We have to do this manually, 
+# since the function only works on a modified GF output when each SNP is run independently. We 
+# want to get a data.frame with a row for each SNP with R2 > 0 and a column with the R2 for each 
+# predictor variable. 
+
+gfSNPs.R2.EU <- t(gfSNPs.EU$imp.rsq) #1814 SNPs w/ R2 > 0 
+
+Perc <- quantile(gfSNPs.R2.EU, 0.95)
+
+# Now I need to get the names of these outlier SNPs (327)
+gf.SNPs.R2.EU.df <- as.data.frame(gfSNPs.R2.EU)
+gf.SNPs.R2.EU.df.outliers <- gf.SNPs.R2.EU.df %>% 
+  filter(bio5 >= 0.1076217 | bio6 >= 0.1076217 | bio17 >= 0.1076217 | bio19 >= 0.1076217 | bio2 >= 0.1076217)
+
+maxColumnNames <- as.data.frame(apply(gf.SNPs.R2.EU.df.outliers, 1, function(row) colnames(gf.SNPs.R2.EU.df.outliers)[which.max(row)]))
+
+GFRaw.EU.cand <- rownames(gf.SNPs.R2.EU.df.outliers)
+```
+
+## Compare the GF-raw between ranges. 
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(GFRaw.EU.cand)) #334
+length(unique(GFRaw.WUS.cand)) #142
+
+# For some reason the site info disappeared from the EU candidate list, so let's make sure the WUS list matches: 
+GFRaw.EU.cand <- gsub("\\.[0-9]*",".", GFRaw.EU.cand)
+
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(GFRaw.EU =GFRaw.EU.cand , GFRaw.WUS =GFRaw.WUS.cand )
+
+display_venn(ven, category.names = c("E. Europe" , "W. USA"),fill = c("blue", "red"))
+```
+
+## BAYENV2: Here, we will analyze and assess the results from BAYENV2, a Bayesian model approach that calculates standardized allele frequencies that account for population history and relatedness in an attempt to adjust when detecting loci invovled in local adaptation.    
+
+## Western US
+**Summary**: 
+
+```{r}
+# We first need to standardize the environmental data for each range by subtracting the mean value and dividing by the standard deviation. I am doing this within each range, but not sure if that is the correct thing to do... 
+
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all s <- amples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_WUS) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+sdize.env_WUS <- env_WUS %>% 
+  dplyr::select(-c(pop_code)) %>% 
+  mutate(sdize.bio5 = (bio5 - mean(bio5))/sd(bio5)) %>% 
+  mutate(sdize.bio6 = (bio6 - mean(bio6))/sd(bio6)) %>% 
+  mutate(sdize.bio19 = (bio19 - mean(bio19)/sd(bio19))) %>% 
+  mutate(sdize.bio17 = (bio17 - mean(bio17)/sd(bio17))) %>% 
+  mutate(sdize.bio2 = (bio2 - mean(bio2)/sd(bio2))) %>% 
+  dplyr::select(sdize.bio5, sdize.bio6, sdize.bio19, sdize.bio17, sdize.bio2) %>% 
+  t()
+
+write.table(file = "standized.env_WUS.txt", sdize.env_WUS, quote = F, row.names = F, col.names = F, sep = "\t")
+
+# Read in four independent covariance matrices to make sure they are well-correlated 
+intro.matrix1 <- as.matrix(read.table("bayenv/introduced.last.matrix.chain1", header = F))
+intro.matrix2 <- as.matrix(read.table("bayenv/introduced.last.matrix.chain2", header = F))
+intro.matrix3 <- as.matrix(read.table("bayenv/introduced.last.matrix.chain3", header = F))
+intro.matrix4 <- as.matrix(read.table("bayenv/introduced.last.matrix.chain4", header = F))
+
+intro.matrix1.cor <- cor(intro.matrix1); heatmap(intro.matrix1.cor)
+intro.matrix2.cor <- cor(intro.matrix2); heatmap(intro.matrix2.cor)
+intro.matrix3.cor <- cor(intro.matrix3); heatmap(intro.matrix3.cor)
+intro.matrix4.cor <- cor(intro.matrix4); heatmap(intro.matrix4.cor)
+
+list <- list(intro.matrix1, intro.matrix2, intro.matrix3, intro.matrix4)
+
+intro.matrix.mean <- Reduce("+", list) / length(list)
+intro.matrix.mean.cor <- cor(intro.matrix.mean); heatmap(intro.matrix.mean.cor)
+
+write.table(x = intro.matrix.mean, "bayenv/introduced.matrix.mean", row.names = F, col.names = F, quote = F, sep = "\t")
+
+# Read in *.BF files from bayenv after running on command line
+
+WUS_snp_names <- read.delim("bayenv/introduced.bayenv.snp.names_loci.txt", header = F)
+
+WUS_BF1 <- as.matrix(read.delim("bayenv/introduced.chain1.bf", header = F, row.names = 1))
+WUS_BF2 <- as.matrix(read.delim("bayenv/introduced.chain2.bf", header = F, row.names = 1))
+WUS_BF3 <- as.matrix(read.delim("bayenv/introduced.chain3.bf", header = F, row.names = 1))
+WUS_BF4 <- as.matrix(read.delim("bayenv/introduced.chain4.bf", header = F, row.names = 1))
+
+WUS_BF_list <- list(WUS_BF1, WUS_BF2, WUS_BF3, WUS_BF4)
+
+WUS_BF_mean <- as.data.frame(Reduce("+", WUS_BF_list) / length(WUS_BF_list))
+
+cols <- c("bio5.BF", "bio6.BF", "bio19.BF", "bio17.BF", "bio2.BF", 
+              "bio5.rho", "bio6.rho", "bio19.rho", "bio17.rho", "bio2.rho",
+              "bio5.rs", "bio6.rs", "bio19.rs", "bio17.rs", "bio2.rs")
+
+colnames(WUS_BF_mean) <- cols
+
+WUS_BF_mean <- WUS_BF_mean %>% 
+  mutate(abs.bio5.rho = abs(bio5.rho), abs.bio6.rho = abs(bio6.rho), 
+         abs.bio19.rho = abs(bio19.rho), abs.bio17.rho = abs(bio17.rho), 
+         abs.bio2.rho = abs(bio2.rho))
+
+rownames(WUS_BF_mean) <- WUS_snp_names$V1
+
+# Look at BAYES FACTORS first 
+
+WUS_BF_mean.bf.mat <- as.matrix(dplyr::select(WUS_BF_mean, bio5.BF, bio6.BF, bio19.BF, bio17.BF, bio2.BF))
+
+hist.data <- hist(WUS_BF_mean.bf.mat, breaks = 50, plot =F)
+hist.data$counts = log10(hist.data$counts)
+plot(hist.data, ylim = c(0, 5), xlim=c(0,20), xlab="bayenv2 BF values < 20", 
+     ylab="log10(frequency)", main ="")
+abline(v = 3)
+
+length(which(WUS_BF_mean.bf.mat > 3)) #47 candidates w/ BF > 3
+
+# Now look at RHO 
+
+WUS_BF_mean.rho.mat <- as.matrix(dplyr::select(WUS_BF_mean, abs.bio5.rho, abs.bio6.rho, abs.bio19.rho, abs.bio17.rho, abs.bio2.rho))
+
+hist.data <- hist(WUS_BF_mean.rho.mat, breaks = 50, plot =F)
+hist.data$counts = log10(hist.data$counts)
+plot(hist.data, ylim=c(0,6), xlim=c(0,1), xlab="bayenv2 rho values", 
+     ylab="log10(frequency)", main ="")
+
+# Now I need to get the names of these outlier SNPs -- 47 candidate loci 
+WUS_BF.bf.outliers <- WUS_BF_mean %>% 
+  filter(bio5.BF >= 3 | bio6.BF >= 3 | bio17.BF >= 3 | bio19.BF >= 3 | bio2.BF >= 3)
+
+# Alternatively do the top 5% BFs and top 7% rhos -- this gives us 173 candidate loci 
+BF.perc <- quantile(WUS_BF_mean.bf.mat, 0.95)
+rho.perc <- quantile(WUS_BF_mean.rho.mat, 0.93)
+
+WUS_BF.perc.outliers <- WUS_BF_mean %>% 
+  mutate(class = case_when((bio5.BF >= BF.perc & abs.bio5.rho >= rho.perc) ~ "bio5_sig",
+                           (bio6.BF >= BF.perc & abs.bio6.rho >= rho.perc) ~ "bio6_sig",
+                           (bio19.BF >= BF.perc & abs.bio19.rho >= rho.perc) ~ "bio19_sig",
+                           (bio17.BF >= BF.perc & abs.bio17.rho >= rho.perc) ~ "bio17_sig",
+                           (bio2.BF >= BF.perc & abs.bio2.rho >= rho.perc) ~ "bio2_sig", TRUE ~ "not_sig")) %>% 
+  filter(class != "not_sig")
+
+# Doing it this way, by using percentiles, we get 173 significant candidates!  
+
+WUS.Bayenv.cand <- rownames(WUS_BF.perc.outliers)
+
+```
+
+## Europe
+**Summary**: 
+
+```{r}
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all s <- amples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_EU) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+sdize.env_EU <- env_EU %>% 
+  select(-c(pop_code)) %>% 
+  mutate(sdize.bio5 = (bio5 - mean(bio5))/sd(bio5)) %>% 
+  mutate(sdize.bio6 = (bio6 - mean(bio6))/sd(bio6)) %>% 
+  mutate(sdize.bio19 = (bio19 - mean(bio19)/sd(bio19))) %>% 
+  mutate(sdize.bio17 = (bio17 - mean(bio17)/sd(bio17))) %>% 
+  mutate(sdize.bio2 = (bio2 - mean(bio2)/sd(bio2))) %>% 
+  select(sdize.bio5, sdize.bio6, sdize.bio19, sdize.bio17, sdize.bio2) %>% 
+  t()
+
+write.table(file = "standized.env_EU.txt", sdize.env_EU, quote = F, row.names = F, col.names = F, sep = "\t")
+
+# Read in four independent covariance matrices to make sure they are well-correlated 
+native.matrix1 <- as.matrix(read.table("bayenv/native.last.matrix.chain1", header = F))
+native.matrix2 <- as.matrix(read.table("bayenv/native.last.matrix.chain2", header = F))
+native.matrix3 <- as.matrix(read.table("bayenv/native.last.matrix.chain3", header = F))
+native.matrix4 <- as.matrix(read.table("bayenv/native.last.matrix.chain4", header = F))
+
+native.matrix1.cor <- cor(native.matrix1); heatmap(native.matrix1.cor)
+native.matrix2.cor <- cor(native.matrix2); heatmap(native.matrix2.cor)
+native.matrix3.cor <- cor(native.matrix3); heatmap(native.matrix3.cor)
+native.matrix4.cor <- cor(native.matrix4); heatmap(native.matrix4.cor)
+
+list <- list(native.matrix1, native.matrix2, native.matrix3, native.matrix4)
+
+native.matrix.mean <- Reduce("+", list) / length(list)
+native.matrix.mean.cor <- cor(native.matrix.mean); heatmap(native.matrix.mean.cor)
+
+write.table(x = native.matrix.mean, "bayenv/native.matrix.mean", row.names = F, col.names = F, quote = F, sep = "\t")
+
+# Read in *.BF files from bayenv after running on command line
+
+EU_snp_names <- read.delim("bayenv/native.bayenv.snp.names_loci.txt", header = F)
+
+EU_BF1 <- as.matrix(read.delim("bayenv/native.chain1.bf", header = F, row.names = 1))
+EU_BF2 <- as.matrix(read.delim("bayenv/native.chain2.bf", header = F, row.names = 1))
+EU_BF3 <- as.matrix(read.delim("bayenv/native.chain3.bf", header = F, row.names = 1))
+EU_BF4 <- as.matrix(read.delim("bayenv/native.chain4.bf", header = F, row.names = 1))
+
+EU_BF_list <- list(EU_BF1, EU_BF2, EU_BF3, EU_BF4)
+
+EU_BF_mean <- as.data.frame(Reduce("+", EU_BF_list) / length(EU_BF_list))
+
+cols <- c("bio5.BF", "bio6.BF", "bio19.BF", "bio17.BF", "bio2.BF", 
+              "bio5.rho", "bio6.rho", "bio19.rho", "bio17.rho", "bio2.rho",
+              "bio5.rs", "bio6.rs", "bio19.rs", "bio17.rs", "bio2.rs")
+
+colnames(EU_BF_mean) <- cols
+
+EU_BF_mean <- EU_BF_mean %>% 
+  mutate(abs.bio5.rho = abs(bio5.rho), abs.bio6.rho = abs(bio6.rho), 
+         abs.bio19.rho = abs(bio19.rho), abs.bio17.rho = abs(bio17.rho), 
+         abs.bio2.rho = abs(bio2.rho))
+
+rownames(EU_BF_mean) <- EU_snp_names$V1
+
+# Look at BAYES FACTORS first 
+
+EU_BF_mean.bf.mat <- as.matrix(dplyr::select(EU_BF_mean, bio5.BF, bio6.BF, bio19.BF, bio17.BF, bio2.BF))
+
+hist.data <- hist(EU_BF_mean.bf.mat, breaks = 50, plot =F)
+hist.data$counts = log10(hist.data$counts)
+plot(hist.data, ylim = c(0, 5), xlim=c(0,20), xlab="bayenv2 BF values < 20", 
+     ylab="log10(frequency)", main ="")
+abline(v = 3)
+
+length(which(EU_BF_mean.bf.mat > 3)) #34 candidates w/ BF > 3
+
+# Now look at RHO 
+
+EU_BF_mean.rho.mat <- as.matrix(dplyr::select(EU_BF_mean, abs.bio5.rho, abs.bio6.rho, abs.bio19.rho, abs.bio17.rho, abs.bio2.rho))
+
+hist.data <- hist(EU_BF_mean.rho.mat, breaks = 50, plot =F)
+hist.data$counts = log10(hist.data$counts)
+plot(hist.data, ylim=c(0,6), xlim=c(0,1), xlab="bayenv2 rho values", 
+     ylab="log10(frequency)", main ="")
+
+# Now I need to get the names of these outlier SNPs -- 33 candidate loci 
+EU_BF.bf.outliers <- EU_BF_mean %>% 
+  filter(bio5.BF >= 3 | bio6.BF >= 3 | bio17.BF >= 3 | bio19.BF >= 3 | bio2.BF >= 3)
+
+# Alternatively do the top 5% BFs and top 7% rhos -- this gives us 178 candidate loci 
+BF.perc <- quantile(EU_BF_mean.bf.mat, 0.95)
+rho.perc <- quantile(EU_BF_mean.rho.mat, 0.97)
+
+EU_BF.perc.outliers <- EU_BF_mean %>% 
+  mutate(class = case_when((bio5.BF >= BF.perc & abs.bio5.rho >= rho.perc) ~ "bio5_sig",
+                           (bio6.BF >= BF.perc & abs.bio6.rho >= rho.perc) ~ "bio6_sig",
+                           (bio19.BF >= BF.perc & abs.bio19.rho >= rho.perc) ~ "bio19_sig",
+                           (bio17.BF >= BF.perc & abs.bio17.rho >= rho.perc) ~ "bio17_sig",
+                           (bio2.BF >= BF.perc & abs.bio2.rho >= rho.perc) ~ "bio2_sig", TRUE ~ "not_sig")) %>% 
+  filter(class != "not_sig")
+
+# Doing it this way, by using percentiles, we get 163 significant candidates 
+
+EU.Bayenv.cand <- rownames(EU_BF.perc.outliers)
+
+```
+
+## Compare BAYENV2 between ranges 
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(EU.Bayenv.cand)) #136
+length(unique(WUS.Bayenv.cand)) #173
+
+# For some reason the site info disappeared from the EU candidate list, so let's make sure the WUS list matches: 
+GFRaw.WUS.cand <- gsub("\\.[0-9]*",".", GFRaw.WUS.cand)
+
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(Bayenv.EU = EU.Bayenv.cand, Bayenv.WUS =WUS.Bayenv.cand )
+
+display_venn(ven, category.names = c("E. Europe" , "W. USA"),fill = c("blue", "red"))
+```
+
+## GF-X: Gradient Forest (GF) is a machine-learning approach to identify outliers in genomic datasets associated with environmental variables. This approach uses standardized population allele frequencies by correcting for population structure in the dataset using bayenv-2.
+
+
+## Western US
+**Summary**: 
+
+```{r}
+WUS.stand.allele.freq <- read.delim("bayenv/introduced.snp.freq2", header =F)
+t.WUS.stand.allele.freq <- as.data.frame(t(WUS.stand.allele.freq))
+
+WUS.stand.allele.freq.snp_names <- read.delim("bayenv/introduced.bayenv.snp.names_loci.txt", header = F)
+
+colnames(t.WUS.stand.allele.freq) <- make.names(WUS.stand.allele.freq.snp_names$V1)
+
+rownames(t.WUS.stand.allele.freq) <- rownames(WUS.allele.freq)
+
+# Get environmental data. We will continue to use the 'env' object for this. The object should be a row for each population and a column for each variable, so we will get the mean value for each bioclim variable for each population (should actually be the same)
+
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all s <- amples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_WUS <- env %>% 
+  dplyr::filter(Long < 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_WUS) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+# Names of variables used in fitting GF
+predictors <- c("bio5", "bio6", "bio19", "bio17", "bio2")
+
+# In GF, the maximum number of splits is defined by the following according to the suggestions of the authors:
+maxLevel <- log2(0.368*nrow(env_WUS)/2)
+
+# Now, run the GF model
+
+gfX.SNPs.WUS <- gradientForest(cbind(t.WUS.stand.allele.freq, env_WUS), predictor.vars = predictors, 
+               response.vars = colnames(t.WUS.stand.allele.freq), ntree = 500, maxLevel = maxLevel,
+               trace = T, corr.threshold = 0.5)
+
+
+plot(gfX.SNPs.WUS, plot.type = "Overall.Importance")
+plot(gfX.SNPs.WUS, plot.type = "Split.Density")
+
+# Now we can extract the importance (R2) values and format as table. We have to do this manually, 
+# since the function only works on a modified GF output when each SNP is run independently. We 
+# want to get a data.frame with a row for each SNP with R2 > 0 and a column with the R2 for each 
+# predictor variable. 
+
+gfX.SNPs.R2.WUS <- t(gfX.SNPs.WUS$imp.rsq) #10 SNPs w/ R2 > 0 
+
+Perc <- quantile(gfX.SNPs.R2.WUS, 0.95)
+
+# Now I need to get the names of these outlier SNPs: 
+gfX.SNPs.R2.WUS.df <- as.data.frame(gfX.SNPs.R2.WUS)
+gfX.SNPs.R2.WUS.df.outliers <- gfX.SNPs.R2.WUS.df %>% 
+  filter(bio5 >= 0.03296629 | bio6 >= 0.03296629 | bio17 >= 0.03296629 | bio19 >= 0.03296629 | bio2 >= 0.03296629)
+
+# There are 2 outlier SNPs
+GFX.WUS.cand <- rownames(gfX.SNPs.R2.WUS.df.outliers)
+```
+
+## Europe
+**Summary**: 
+```{r}
+EU.stand.allele.freq <- read.delim("bayenv/native.snps.freq2", header = F)
+t.EU.stand.allle.freq <- as.data.frame(t(EU.stand.allele.freq))
+
+EU.stand.allele.freq.snp_names <- read.delim("bayenv/native.bayenv.snp.names_loci.txt", header = F)
+
+colnames(t.EU.stand.allle.freq) <- make.names(EU.stand.allele.freq.snp_names$V1)
+
+rownames(t.EU.stand.allle.freq) <- rownames(EU.allele.freq)
+
+# Get environmental data. We will continue to use the 'env' object for this. The object should be a row for each population and a column for each variable, so we will get the mean value for each bioclim variable for each population (should actually be the same)
+
+env <- read.delim("individual_climate_data_30s.txt", sep = " ")
+env$Site <- as.character(env$Site)
+
+# Filter for individuals/pops in the GEA dataset 
+locations <- read.delim("EUVI_locations.txt", header =T)
+# Filter locations to only samples that we are using: 
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+locations_update <- distinct(locations[locations$EUVI_Sample %in% popmap3$V1,])
+
+# Filter to all samples we are keeping: 
+env <- env[env$EUVI_Sample %in% locations_update$EUVI_Sample,]
+
+# Now filter to only include samples in the introduced range and only the variables we are interested in
+env_EU <- env %>% 
+  dplyr::filter(Long > 0) %>% 
+  dplyr::select(EUVI_Sample, Site, Lat, Long, bio5, bio6, bio19, bio17, bio2) %>% 
+  arrange(EUVI_Sample) %>% 
+  dplyr::select(Site, bio5, bio6, bio19, bio17, bio2) %>% 
+  distinct()
+
+colnames(env_EU) <- c("pop_code", "bio5", "bio6", "bio19", "bio17", "bio2")
+
+# Names of variables used in fitting GF
+predictors <- c("bio5", "bio6", "bio19", "bio17", "bio2")
+
+# In GF, the maximum number of splits is defined by the following according to the suggestions of the authors:
+maxLevel <- log2(0.368*nrow(env_EU)/2)
+
+# Now, run the GF model
+
+gfX.SNPs.EU <- gradientForest(cbind(t.EU.stand.allle.freq, env_EU), predictor.vars = predictors, 
+               response.vars = colnames(t.EU.stand.allle.freq), ntree = 500, maxLevel = maxLevel,
+               trace = T, corr.threshold = 0.5)
+
+
+plot(gfX.SNPs.EU, plot.type = "Overall.Importance")
+plot(gfX.SNPs.EU, plot.type = "Split.Density")
+
+# Now we can extract the importance (R2) values and format as table. We have to do this manually, 
+# since the function only works on a modified GF output when each SNP is run independently. We 
+# want to get a data.frame with a row for each SNP with R2 > 0 and a column with the R2 for each 
+# predictor variable. 
+
+gfX.SNPs.R2.EU <- t(gfX.SNPs.EU$imp.rsq) #549 SNPs w/ R2 > 0 
+
+Perc <- quantile(gfX.SNPs.R2.EU, 0.95)
+
+# Now I need to get the names of these outlier SNPs: 
+gfX.SNPs.R2.EU.df <- as.data.frame(gfX.SNPs.R2.EU)
+gfX.SNPs.R2.EU.df.outliers <- gfX.SNPs.R2.EU.df %>% 
+  filter(bio5 >= 0.03463025 | bio6 >= 0.03463025 | bio17 >= 0.03463025 | bio19 >= 0.03463025 | bio2 >= 0.03463025)
+
+maxColumnNames <- as.data.frame(apply(gfX.SNPs.R2.EU.df.outliers, 1, function(row) colnames(gfX.SNPs.R2.EU.df.outliers)[which.max(row)]))
+
+
+# There are 90 outlier SNPs 
+GFX.EU.cand <- rownames(gfX.SNPs.R2.EU.df.outliers)
+```
+
+## Comapre GF-X results between ranges 
+
+```{r}
+# Verify the length of each set of candidate SNPs 
+length(unique(GFX.EU.cand)) #84
+length(unique(GFX.WUS.cand)) #2
+
+display_venn <- function(x, ...){
+  library(VennDiagram)
+  grid.newpage()
+  venn_object <- venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+ven <- list(GFX.EU = GFX.EU.cand, GFX.WUS =GFX.WUS.cand )
+
+display_venn(ven, category.names = c("E. Europe" , "W. USA"),fill = c("blue", "red"))
+```
+
+## Comparison of methods 
+**Summary**: Generate a Venn diagram to identify overlap (or lack thereof) between the different GEA methods used. 
+```{r}
+RDA.WUS <- unique(cand_WUS$snp)
+RDA.WUS <- gsub("X", "", RDA.WUS)
+RDA.WUS <- gsub("\\.[0-9]*_[A-Z]","", RDA.WUS)
+
+RDA.EU <- unique(cand_EU$snp)
+RDA.EU <- gsub("X", "", RDA.EU)
+RDA.EU <- gsub("\\.[0-9]*_[A-Z]","", RDA.EU)
+
+pRDA.WUS <- unique(prda.cand_WUS$snp)
+pRDA.WUS <- gsub("X", "", pRDA.WUS)
+pRDA.WUS <- gsub("\\.[0-9]*_[A-Z]","", pRDA.WUS)
+
+pRDA.EU <- unique(prda.cand_EU$snp)
+pRDA.EU <- gsub("X", "", pRDA.EU)
+pRDA.EU <- gsub("\\.[0-9]*_[A-Z]","", pRDA.EU)
+
+LFMM.WUS <- WUS.sig$snp
+LFMM.WUS <-  gsub("X", "", LFMM.WUS)
+LFMM.WUS <- gsub("\\.[0-9]*_[A-Z]","", LFMM.WUS)
+
+LFMM.EU <- EU.sig$snp
+LFMM.EU <-  gsub("X", "", LFMM.EU)
+LFMM.EU <- gsub("\\.[0-9]*_[A-Z]","", LFMM.EU)
+
+gfRaw.WUS <- rownames(gf.SNPs.R2.WUS.df.outliers)
+gfRaw.WUS <- gsub("X", "", gfRaw.WUS)
+gfRaw.WUS <- gsub("\\.[0-9]*","", gfRaw.WUS)
+
+gfRaw.EU <- rownames(gf.SNPs.R2.EU.df.outliers)
+gfRaw.EU <- gsub("X", "", gfRaw.EU)
+gfRaw.EU <- gsub("\\.[0-9]*","", gfRaw.EU)
+
+gfX.WUS <- rownames(gfX.SNPs.R2.WUS.df.outliers) 
+gfX.WUS <- gsub("X", "", gfX.WUS)
+gfX.WUS <- gsub("\\.[0-9]*","", gfX.WUS)
+
+gfX.EU <- rownames(gfX.SNPs.R2.EU.df.outliers) 
+gfX.EU <- gsub("X", "", gfX.EU)
+gfX.EU <- gsub("\\.[0-9]*","", gfX.EU)
+
+bayenv.EU <- EU.Bayenv.cand
+bayenv.EU <- gsub("\\:[0-9]*","", bayenv.EU)
+
+bayenv.WUS <- WUS.Bayenv.cand
+bayenv.WUS <- gsub("\\:[0-9]*","", bayenv.WUS)
+
+
+# Verify the length of each set of candidate SNPs 
+length(unique(RDA.WUS))
+length(unique(RDA.EU)) 
+length(unique(pRDA.WUS))
+length(unique(pRDA.EU))
+length(unique(LFMM.WUS))
+length(unique(LFMM.EU))
+length(unique(gfRaw.WUS)) 
+length(unique(gfRaw.EU))
+length(unique(gfX.WUS)) 
+length(unique(gfX.EU))
+length(unique(bayenv.WUS))
+length(unique(bayenv.EU))
+
+
+RDA.WUS <- as.data.frame(RDA.WUS); RDA.WUS$x <- c("x")
+colnames(RDA.WUS) <- c("locus", "RDA.WUS")
+
+RDA.EU <- as.data.frame(RDA.EU); RDA.EU$x <- c("x")
+colnames(RDA.EU) <- c("locus", "RDA.EU")
+
+pRDA.WUS <- as.data.frame(pRDA.WUS); pRDA.WUS$x <- c("x")
+colnames(pRDA.WUS) <- c("locus", "pRDA.WUS")
+
+pRDA.EU <- as.data.frame(pRDA.EU); pRDA.EU$x <- c("x")
+colnames(pRDA.EU) <- c("locus", "pRDA.EU")
+
+LFMM.WUS <- as.data.frame(LFMM.WUS); LFMM.WUS$x <- c("x")
+colnames(LFMM.WUS) <- c("locus", "LFMM.WUS")
+
+LFMM.EU <- as.data.frame(LFMM.EU); LFMM.EU$x <- c("x")
+colnames(LFMM.EU) <- c("locus", "LFMM.EU")
+
+gfRaw.WUS <- as.data.frame(gfRaw.WUS); gfRaw.WUS$x <- c("x")
+colnames(gfRaw.WUS) <- c("locus", "gfRaw.WUS")
+
+gfRaw.EU <- as.data.frame(gfRaw.EU); gfRaw.EU$x <- c("x")
+colnames(gfRaw.EU) <- c("locus", "gfRaw.EU")
+
+gfX.WUS <- as.data.frame(gfX.WUS); gfX.WUS$x <- c("x")
+colnames(gfX.WUS) <- c("locus", "gfX.WUS")
+
+gfX.EU <- as.data.frame(gfX.EU); gfX.EU$x <- c("x")
+colnames(gfX.EU) <- c("locus", "gfX.EU")
+
+bayenv.EU <- as.data.frame(bayenv.EU); bayenv.EU$x <- c("x")
+colnames(bayenv.EU) <- c("locus", "bayenv.EU")
+
+bayenv.WUS <- as.data.frame(bayenv.WUS); bayenv.WUS$x <- c("x")
+colnames(bayenv.WUS) <- c("locus", "bayenv.WUS")
+
+tmp <- full_join(RDA.WUS, pRDA.WUS, by ="locus")
+tmp2 <- full_join(tmp, LFMM.WUS, by = "locus")
+tmp3 <- full_join(tmp2, gfRaw.WUS, by = "locus")
+tmp4 <- full_join(tmp3, gfX.WUS, by = "locus")
+tmp5 <- full_join(tmp4, bayenv.WUS, by = "locus")
+
+tmp6 <- full_join(tmp5, RDA.EU, by ="locus")
+tmp7 <- full_join(tmp6, pRDA.EU, by = "locus")
+tmp8 <- full_join(tmp7, LFMM.EU, by = "locus")
+tmp9 <- full_join(tmp8, gfRaw.EU, by = "locus")
+tmp10 <- full_join(tmp9, gfX.EU, by = "locus")
+
+full_locus_list <- full_join(tmp10, bayenv.EU, by = "locus")
+
+write.csv(file = "full_candidate_list.csv", full_locus_list, quote = F, row.names = F)
+
+```
+
+To prevent having to re-do all the above multiple times, let's read in the previous results and re-format so we can make an Upset plot. The first Upset plot shows the introduced range and the second Upset plot shows the native range. 
+
+```{r}
+library(UpSetR)
+full_candidates <- read.delim("full_candidate_list.txt", sep = " ")
+
+RDA.WUS <- full_candidates %>% select(locus, RDA.WUS) %>%  na.omit() %>% select(locus)
+pRDA.WUS <- full_candidates %>% select(locus, pRDA.WUS) %>%  na.omit() %>% select(locus)
+gfRaw.WUS <- full_candidates %>% select(locus, gfRaw.WUS) %>%  na.omit() %>% select(locus)
+gfX.WUS <- full_candidates %>% select(locus, gfX.WUS) %>%  na.omit() %>% select(locus)
+bayenv.WUS <- full_candidates %>% select(locus, bayenv.WUS) %>%  na.omit() %>% select(locus)
+LFMM.WUS <- full_candidates %>% select(locus, LFMM.WUS) %>% na.omit() %>% select(locus)
+
+RDA.WUS <- as.vector(RDA.WUS$locus)
+pRDA.WUS <- as.vector(pRDA.WUS$locus)
+gfRaw.WUS <- as.vector(gfRaw.WUS$locus)
+gfX.WUS <- as.vector(gfX.WUS$locus)
+bayenv.WUS <- as.vector(bayenv.WUS$locus)
+LFMM.WUS <- as.vector(LFMM.WUS$locus)
+
+wus<- list(RDA = RDA.WUS, pRDA = pRDA.WUS, "Gradient Forest Raw" = gfRaw.WUS, "Gradient Forest X" = gfX.WUS, Bayenv = bayenv.WUS, LFMM = LFMM.WUS)
+
+pdf(file="WUS_upset.pdf", onefile = F, width = 10) 
+upset(fromList(wus), nsets = 6, text.scale = 2)
+dev.off()
+
+RDA.EU <- full_candidates %>% select(locus, RDA.EU) %>%  na.omit() %>% select(locus)
+pRDA.EU <- full_candidates %>% select(locus, pRDA.EU) %>%  na.omit() %>% select(locus)
+gfRaw.EU <- full_candidates %>% select(locus, gfRaw.EU) %>%  na.omit() %>% select(locus)
+gfX.EU <- full_candidates %>% select(locus, gfX.EU) %>%  na.omit() %>% select(locus)
+bayenv.EU <- full_candidates %>% select(locus, bayenv.EU) %>%  na.omit() %>% select(locus)
+LFMM.EU <- full_candidates %>% select(locus, LFMM.EU) %>% na.omit() %>% select(locus)
+
+RDA.EU <- as.vector(RDA.EU$locus)
+pRDA.EU <- as.vector(pRDA.EU$locus)
+gfRaw.EU <- as.vector(gfRaw.EU$locus)
+gfX.EU <- as.vector(gfX.EU$locus)
+bayenv.EU <- as.vector(bayenv.EU$locus)
+LFMM.EU <- as.vector(LFMM.EU$locus)
+
+eu<- list(RDA = RDA.EU, pRDA = pRDA.EU, "Gradient Forest Raw" = gfRaw.EU, "Gradient Forest X" = gfX.EU, Bayenv = bayenv.EU, LFMM = LFMM.EU)
+
+#pdf(file="EU_upset.pdf", onefile = F, width = 10) 
+upset(fromList(eu), nsets = 6, text.scale = 2)
+#dev.off()
+
+```
+
+## Venn Diagrams 
+
+```{r fig.height=7, fig.width=14}
+library(ggvenn)
+
+
+RDA <- list("Native" = RDA.EU, "Introduced" = RDA.WUS)
+RDA.venn <- ggvenn(RDA, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0) + 
+  ggtitle("RDA") + theme(plot.title = element_text(hjust = 0.5, size = 18), label_size = 16)
+
+pRDA <- list("Native" = pRDA.EU, "Introduced" = pRDA.WUS)
+pRDA.venn <- ggvenn(pRDA, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0) +
+  ggtitle("pRDA")+ theme(plot.title = element_text(hjust = 0.5, size = 18), text = element_text(size = 16))
+
+bayenv <- list("Native" = bayenv.EU, "Introduced" = bayenv.WUS)
+bayenv.venn <- ggvenn(bayenv, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0)+  
+  ggtitle("Bayenv")+ theme(plot.title = element_text(hjust = 0.5, size = 18), text = element_text(size = 16))
+
+gfX <- list("Native" = gfX.EU, "Introduced" = gfX.WUS)
+gfX.venn <- ggvenn(gfX, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0) + 
+  ggtitle("Gradient Forest X")+theme(plot.title = element_text(hjust = 0.5, size = 18), text = element_text(size = 16))
+
+gfRaw <- list("Native" = gfRaw.EU, "Introduced" = gfRaw.WUS)
+gfRaw.venn <- ggvenn(gfRaw, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0) +  
+  ggtitle("Gradient Forest Raw")+ theme(plot.title = element_text(hjust = 0.5, size = 18), text = element_text(size = 16))
+
+lfmm <- list("Native" = LFMM.EU, "Introduced" = LFMM.WUS)
+LFMM.venn <- ggvenn(lfmm, c("Native", "Introduced"), fill_color = c("skyblue2", "orange"), set_name_size = 0) +  
+  ggtitle("LFMM")+ theme(plot.title = element_text(hjust = 0.5, size = 18), text = element_text(size = 500))
+
+
+grid.arrange(RDA.venn, pRDA.venn, bayenv.venn, gfX.venn, gfRaw.venn, LFMM.venn, nrow = 2)
+
+pdf(file="venns.pdf", onefile = F, width = 15, height = 6) 
+grid.arrange(RDA.venn, pRDA.venn, bayenv.venn, gfX.venn, gfRaw.venn, LFMM.venn, nrow = 2)
+dev.off()
+```
+
+
+## Annotation of candidate loci
+**Summary**: Here, I used blastx to identify sequence homology between the RAD loci and the <i>Euwallacea fornicatus</i> proteome (another weevil). I filtered to only include the best blast hit based on E-value and then searched against each of the candidate lists to see if the candidates had blast hits. 
+
+```{r}
+blast <- read.delim("populations.loci.blast", header = F)
+colnames(blast) <- c("qseqid", "sseqid", "pident", "length", "mismatch", "gapopen", "qstart", "qend",
+                     "sstart", "send", "evalue", "bitscore")
+
+blast.filt <- blast %>% 
+  group_by(qseqid) %>% 
+  arrange(evalue) %>% 
+  filter(row_number() == 1)
+
+blast.filt <- lapply(blast.filt, function(x) as.character(gsub("CLocus_","", x)))
+blast.filt <- as.data.frame(blast.filt)
+blast.filt$locus <- blast.filt$qseqid
+
+#full_locus_blast <- left_join(full_locus_list, blast.filt, by = "locus")
+
+#RDA.WUS.ann <- blast.filt[blast.filt$sseqid %in% RDA.WUS,]
+
+#RDA.EU.ann <- blast.filt[blast.filt$sseqid %in% RDA.EU,]
+
+#pRDA.WUS.ann <- blast.filt[blast.filt$sseqid %in% pRDA.WUS,]
+
+#pRDA.EU.ann <- blast.filt[blast.filt$sseqid %in% pRDA.EU,]
+
+#gfX.WUS.ann <- blast.filt[blast.filt$sseqid %in% gfX.WUS,]
+
+#gfX.EU.ann <- blast.filt[blast.filt$qseqid %in% gfX.EU,]
+
+```

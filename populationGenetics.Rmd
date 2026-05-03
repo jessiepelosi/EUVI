@@ -1,0 +1,442 @@
+---
+title: "populationGenetics"
+author: "Jessie Pelosi"
+date: "2025-06-09"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(adegenet)
+library(vcfR)
+library(hierfstat)
+library(poppr)
+library(pegas)
+library(dplyr)
+library(ggplot2)
+```
+
+## Examine Founder Event Effects in Introduced Populatinos of EUVI
+
+Read in the data and generate a genind object. 
+
+```{r}
+EUVI <- read.vcfR("populations.snps.thinned.1SD-removed.noLAFI.maf0.01.NoExHet.recode.vcf")
+EUVI.gid <- vcfR2genind(EUVI)
+
+site_history <- read.csv("EUVI_site_history - Sheet1.csv")
+site_history$site <- site_history$Sample_abbr
+#site_history <- dplyr::select(site_history, Sample_abbr, Rank, Certainty, Release_year)
+
+popmap3 <- read.delim("samples_to_keep.txt", sep = " ")
+colnames(popmap3) <- c("sample", "site", "geog1", "geog2")
+
+popmap <- full_join(popmap3, site_history, by = "site")
+#write.csv(file="popmap_sitehistory.csv", popmap, quote = F, row.names = F)
+
+popmap <- read.csv("popmap_sitehistory.csv")
+
+# Make dataframe linking groupings to site history: 
+
+history <- c("Primary", "Turkey", "Greece", "PNW", "P/S", "P/S", "S/T", "S/T", "S/T", "S/T/Q", "S/T/Q", "T/Q", "T/Q", "T/Q", "T/Q", "T/Q", "T/Q", "S/T", "S/T")
+grouping <- c("Primary", "Turkey", "Greece", "PNW", "A", "B", "C", "D", "E", "F1", "F2", "G1", "G2", "H", "I1", "I2", "WA", "OR", "ID")
+key_df <- data.frame(history, grouping)
+
+```
+
+In the next block, we will subset the overall genind to only include the candidate loci identified by the pRDA in the introduced range. 
+
+```{r}
+full_candidates <- read.delim("full_candidate_list.txt", sep = " ")
+
+pRDA.WUS <- full_candidates %>% select(locus, pRDA.WUS) %>%  na.omit() %>% select(locus)
+
+all_loci <- locNames(EUVI.gid)
+all_loci <- gsub("X", "", all_loci)
+test <- gsub("\\:[0-9]*","", all_loci)
+
+locNames(EUVI.gid) <- test
+pRDA.WUS.loci <- as.character(pRDA.WUS$locus)
+
+non_cand_loci <- setdiff(test, pRDA.WUS.loci)
+
+EUVI.pRDA.cand.gid <- EUVI.gid[loc = pRDA.WUS.loci]
+EUVI.notCand.gid <- EUVI.gid[loc = non_cand_loci]
+
+
+# EU pRDA candidates: 
+pRDA.EU <- full_candidates %>% dplyr::select(locus, pRDA.EU) %>% na.omit() %>% dplyr::select(locus)
+
+pRDA.EU.loci <- as.character(pRDA.EU$locus)
+
+EUVI.EUpRDA.cand.gid <- EUVI.gid[loc = pRDA.EU.loci]
+```
+
+Get some basic stats across population groupings. 
+
+Here, I consider all the samples within each geographic region (Greece, Turkey, NCA, SCA, and PNW) to be in the same population, so we can a single point estimate for each geographic region. 
+
+```{r}
+se <- function(x) sd(x, na.rm = T)/sqrt(length(x))
+
+pop(EUVI.gid) <- popmap$Grouping
+#EUVI.gid
+
+pop(EUVI.notCand.gid) <- popmap$Grouping
+
+pop(EUVI.pRDA.cand.gid) <- popmap$Grouping
+#EUVI.pRDA.cand.gid
+
+pop(EUVI.EUpRDA.cand.gid) <- popmap$Grouping
+
+# Expected heterozygosity at population-level 
+notCand.BS <- basic.stats(EUVI.notCand.gid)
+WUSCand.BS <- basic.stats(EUVI.pRDA.cand.gid)
+EUCand.BS <- basic.stats(EUVI.EUpRDA.cand.gid)
+
+# Non candidate
+He <- as.data.frame(notCand.BS$Hs)
+se(He$Turkey); se(He$Greece); se(He$F1); se(He$OR); se(He$I2); se(He$WA); se(He$E); se(He$D); se(He$F2); se(He$Primary); se(He$B); se(He$C); se(He$C); se(He$H); se(He$G2); se(He$I1); se(He$G1); se(He$A)
+
+Ho <- as.data.frame(notCand.BS$Ho)
+se(Ho$Turkey); se(Ho$Greece); se(Ho$F1); se(Ho$OR); se(Ho$I2); se(Ho$WA); se(Ho$E); se(Ho$D); se(Ho$F2); se(Ho$Primary); se(Ho$B); se(Ho$C); se(Ho$C); se(Ho$H); se(Ho$G2); se(Ho$I1); se(Ho$G1); se(Ho$A)
+
+Fis <- as.data.frame(notCand.BS$Fis)
+se(Fis$Turkey); se(Fis$Greece); se(Fis$F1); se(Fis$OR); se(Fis$I2); se(Fis$WA); se(Fis$E); se(Fis$D); se(Fis$F2); se(Fis$Primary); se(Fis$B); se(Fis$C); se(Fis$C); se(Fis$H); se(Fis$G2); se(Fis$I1); se(Fis$G1); se(Fis$A)
+
+# WUS Candidates
+He <- as.data.frame(WUSCand.BS$Hs)
+se(He$Turkey); se(He$Greece); se(He$F1); se(He$OR); se(He$I2); se(He$WA); se(He$E); se(He$D); se(He$F2); se(He$Primary); se(He$B); se(He$C); se(He$C); se(He$H); se(He$G2); se(He$I1); se(He$G1); se(He$A)
+
+Ho <- as.data.frame(WUSCand.BS$Ho)
+se(Ho$Turkey); se(Ho$Greece); se(Ho$F1); se(Ho$OR); se(Ho$I2); se(Ho$WA); se(Ho$E); se(Ho$D); se(Ho$F2); se(Ho$Primary); se(Ho$B); se(Ho$C); se(Ho$C); se(Ho$H); se(Ho$G2); se(Ho$I1); se(Ho$G1); se(Ho$A)
+
+Fis <- as.data.frame(WUSCand.BS$Fis)
+se(Fis$Turkey); se(Fis$Greece); se(Fis$F1); se(Fis$OR); se(Fis$I2); se(Fis$WA); se(Fis$E); se(Fis$D); se(Fis$F2); se(Fis$Primary); se(Fis$B); se(Fis$C); se(Fis$C); se(Fis$H); se(Fis$G2); se(Fis$I1); se(Fis$G1); se(Fis$A)
+
+#EU Candidates
+He <- as.data.frame(EUCand.BS$Hs)
+se(He$Turkey); se(He$Greece); se(He$F1); se(He$OR); se(He$I2); se(He$WA); se(He$E); se(He$D); se(He$F2); se(He$Primary); se(He$B); se(He$C); se(He$C); se(He$H); se(He$G2); se(He$I1); se(He$G1); se(He$A)
+
+Ho <- as.data.frame(EUCand.BS$Ho)
+se(Ho$Turkey); se(Ho$Greece); se(Ho$F1); se(Ho$OR); se(Ho$I2); se(Ho$WA); se(Ho$E); se(Ho$D); se(Ho$F2); se(Ho$Primary); se(Ho$B); se(Ho$C); se(Ho$C); se(Ho$H); se(Ho$G2); se(Ho$I1); se(Ho$G1); se(Ho$A)
+
+Fis <- as.data.frame(EUCand.BS$Fis)
+se(Fis$Turkey); se(Fis$Greece); se(Fis$F1); se(Fis$OR); se(Fis$I2); se(Fis$WA); se(Fis$E); se(Fis$D); se(Fis$F2); se(Fis$Primary); se(Fis$B); se(Fis$C); se(Fis$C); se(Fis$H); se(Fis$G2); se(Fis$I1); se(Fis$G1); se(Fis$A)
+
+He_pop <- Hs(data = EUVI.notCand.gid)
+
+He_pop_cand <- Hs(data = EUVI.pRDA.cand.gid)
+
+He_pop_EUcand <- Hs(data = EUVI.EUpRDA.cand.gid)
+
+# Observed heterozygosity at population-level 
+Ho_pop <- Ho(data = EUVI.notCand.gid)
+
+Ho_pop_cand <- Ho(data  = EUVI.pRDA.cand.gid)
+
+Ho_pop_EUcand <- Ho(data = EUVI.EUpRDA.cand.gid)
+
+# Get Fis at population level 
+Fis_pop <- 1-(Ho_pop/He_pop)
+
+Fis_pop_cand <- 1-(Ho_pop_cand/He_pop_cand)
+
+Fis_pop_EUcand <- 1-(Ho_pop_EUcand/He_pop_EUcand)
+
+# Plot these metrics against sample sizes
+
+He.df <- as.data.frame(He_pop)
+He.df$grouping <- rownames(He.df)
+He.df <- inner_join(He.df, key_df, by = "grouping")
+He.df$history <- factor(He.df$history, levels = c("Turkey", "Greece", "PNW", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+He.cand.df <- as.data.frame(He_pop_cand)
+He.cand.df$grouping <- rownames(He.cand.df)
+He.cand.df <- inner_join(He.cand.df, key_df, by = "grouping")
+He.cand.df$history <- factor(He.cand.df$history, levels = c("Turkey", "Greece", "PNW", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+He.EUcand.df <- as.data.frame(He_pop_EUcand)
+He.EUcand.df$grouping <- rownames(He.EUcand.df)
+He.EUcand.df <- inner_join(He.EUcand.df, key_df, by = "grouping")
+He.EUcand.df$history <- factor(He.EUcand.df$history, levels = c("Turkey", "Greece",  "PNW", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+
+ggplot() + geom_point(data = He.df, mapping = aes(x = history, y = He_pop, label = grouping)) + 
+  geom_point(data = He.cand.df, mapping = aes(x = history, y = He_pop_cand, label = grouping), color = "orange3") + 
+  geom_point(data = He.EUcand.df, mapping = aes(x = history, y = He_pop_EUcand, label = grouping), color = "skyblue1") +
+  theme_bw() +
+  xlab("Population Grouping") + ylab("Expected Heterozygosity")
+
+##
+
+Ho.df <- as.data.frame(Ho_pop)
+Ho.df$grouping <- rownames(Ho.df)
+Ho.df <- inner_join(Ho.df, key_df, by = "grouping")
+Ho.df$history <- factor(Ho.df$history, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+Ho.cand.df <- as.data.frame(Ho_pop_cand)
+Ho.cand.df$grouping <- rownames(Ho.cand.df)
+Ho.cand.df <- inner_join(Ho.cand.df, key_df, by = "grouping")
+Ho.cand.df$history <- factor(Ho.cand.df$history, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+Ho.EUcand.df <- as.data.frame(Ho_pop_EUcand)
+Ho.EUcand.df$grouping <- rownames(Ho.EUcand.df)
+Ho.EUcand.df <- inner_join(Ho.EUcand.df, key_df, by = "grouping")
+Ho.EUcand.df$history <- factor(Ho.EUcand.df$history, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+ggplot() + 
+  geom_point(data = Ho.df, mapping = aes(x = history, y = Ho_pop, label = grouping)) + 
+  geom_point(data = Ho.cand.df, mapping = aes(x = history, y = Ho_pop_cand, label = grouping), color = "orange3") + theme_bw() +
+  geom_point(data = Ho.EUcand.df, mapping = aes(x = history, y = Ho_pop_EUcand, label = grouping), color = "skyblue1") +
+  geom_text(hjust =0, vjust= 0) +
+  xlab("Site History") + ylab("Observed Heterozygosity") 
+
+ggsave("Ho-Feb192026.pdf", height = 5, width = 6)
+
+## 
+
+Fis.df <- as.data.frame(Fis_pop)
+Fis.df$grouping <- rownames(Fis.df)
+Fis.df <- inner_join(Ho.df, key_df, by = "grouping")
+Fis.df$history.x <- factor(Fis.df$history.x, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+Fis.cand.df <- as.data.frame(Fis_pop_cand)
+Fis.cand.df$grouping <- rownames(Fis.cand.df)
+Fis.cand.df <- inner_join(Fis.cand.df, key_df, by = "grouping")
+Fis.cand.df$history <- factor(Fis.cand.df$history, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+Fis.EUcand.df <- as.data.frame(Fis_pop_EUcand)
+Fis.EUcand.df$grouping <- rownames(Fis.EUcand.df)
+Fis.EUcand.df <- inner_join(Fis.EUcand.df, key_df, by = "grouping")
+Fis.EUcand.df$history <- factor(Fis.EUcand.df$history, levels = c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+
+ggplot() + 
+  geom_point(data = Fis.df, mapping = aes(x = history.x, y = Fis_pop, label = grouping)) + 
+  geom_point(data = Fis.cand.df, mapping = aes(x = history, y = Fis_pop_cand, label= grouping), color = "orange3") + theme_bw() +
+  geom_point(data = Fis.EUcand.df, mapping = aes(x =history, y = Fis_pop_EUcand, label = grouping), color = "deepskyblue3") +
+  xlab("Population Grouping") + ylab("Inbreeding Coefficient (Fis)") +
+  geom_text(hjust = 0, vjust =0)
+
+ggsave("Fis-Feb192026.pdf", height = 5, width = 6)
+
+```
+
+## Allelic Richness
+
+```{r}
+# As CA Groups
+
+
+# Using hierfstat: 
+# Non-candidates 
+ar.hf <- hierfstat::allelic.richness(EUVI.notCand.gid)
+ar.mean <- as.data.frame(colMeans(ar.hf$Ar, na.rm = T))
+ar.mean$pop <- rownames(ar.mean)
+ar.mean.se <- reshape2::melt(ar.hf$Ar) %>% 
+  group_by(variable) %>% 
+  summarize(se = sd(value)/sqrt(length(value)))
+ar.mean$se <- ar.mean.se$se
+
+colnames(ar.mean) <- c("AR", "grouping", "SE")
+ar.mean.join <- inner_join(key_df, ar.mean)
+
+# WUS pRDA candidates
+ar.cand <- allelic.richness(EUVI.pRDA.cand.gid)
+ar.cand.mean <- as.data.frame(colMeans(ar.cand$Ar, na.rm = T))
+ar.cand.mean$pop <- rownames(ar.cand.mean)
+ar.cand.mean$se <- reshape2::melt(ar.cand$Ar) %>% 
+  group_by(variable) %>% 
+  summarize(se = sd(value, na.rm = T)/sqrt(length(value)))
+  
+colnames(ar.cand.mean) <- c("AR", "grouping", "sd")
+ar.cand.mean.join <- inner_join(key_df, ar.cand.mean)
+
+# EU pRDA candidates
+ar.EUcand <- allelic.richness(EUVI.EUpRDA.cand.gid)
+ar.EUcand.mean <- as.data.frame(colMeans(ar.EUcand$Ar, na.rm = T))
+ar.EUcand.mean$pop <- rownames(ar.EUcand.mean)
+ar.EUcand.mean$se <- reshape2::melt(ar.EUcand$Ar) %>% 
+  group_by(variable) %>% 
+  summarize(se = sd(value, na.rm = T)/sqrt(length(value)))
+  
+colnames(ar.EUcand.mean) <- c("AR", "grouping", "sd")
+ar.EUcand.mean.join <- inner_join(key_df, ar.EUcand.mean)
+
+
+#plot(ar.mean)
+
+# Using poppr:
+#ar.pr <- allel.rich(EUVI.notCand.gid)
+#ar.pr.df <- as.data.frame(ar.pr$mean.richness)
+#ar.pr.df$pop <- rownames(ar.pr.df)
+
+#colnames(ar.pr.df) <- c("AR", "grouping")
+#ar.pr.df.join <- inner_join(key_df, ar.pr.df)
+
+#ar.pr.cand <- allel.rich(EUVI.pRDA.cand.gid)
+#ar.pr.cand.df <- as.data.frame(ar.pr.cand$mean.richness)
+#ar.pr.cand.df$pop <- rownames(ar.pr.cand.df)
+
+#colnames(ar.pr.cand.df) <- c("AR", "grouping")
+#ar.pr.cand.df.join <- inner_join(key_df, ar.pr.cand.df)
+
+
+
+#ggplot() + geom_point(data = ar.mean.join, mapping = aes(x= history, y = AR)) +
+#  geom_point(ar.pr.df.join, mapping =aes(x=history, y = AR), color = "blue") +
+#  ylab("Allelic Richess") + theme_bw()
+
+#ggplot() + geom_point(data = ar.cand.mean.join, mapping = aes(x = history, y =AR)) +
+#  geom_point(ar.pr.cand.df.join, mapping = aes(x = history, y = AR), color = "blue") +
+#  ylab("Allelic Richness") + theme_bw()
+
+
+ar.mean.join$history <- factor(ar.mean.join$history, levels= c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+ggplot() + geom_point(data = ar.mean.join, mapping = aes(x= history, y = AR)) +
+  geom_point(ar.cand.mean.join, mapping =aes(x=history, y = AR), color = "orange3") +
+  geom_point(ar.EUcand.mean.join, mapping =aes(x=history, y =AR), color = "skyblue1") +
+  ylab("Allelic Richess") + theme_bw()
+
+
+ggsave("Ar-Feb192026.pdf", height = 5, width = 6)
+
+# Private Alleles -- weird results 
+
+#pal <- private_alleles(EUVI.gid, report = "data.frame")
+#ggplot(data = pal) + geom_tile(mapping =aes(x = population, y = allele, fill = count))
+
+#pal_sum <- pal %>% 
+#  group_by(population) %>% 
+#  summarize(n = sum(count))
+
+#pal.cand <- private_alleles(EUVI.pRDA.cand.gid, report = "data.frame") # no private alleles detected 
+
+```
+
+
+## Nucleotide Diversity 
+
+Per-site nucleotide diversity was estimated for each population in vcftools. 
+
+```{r}
+library(tibble)
+library(tidyr)
+
+
+filelist = list.files(path = "./groups-pi/", pattern = "pRDA.sites.pi", full.names = T)
+datafr <- lapply(filelist, FUN=read.table, header = T)
+#datafr2<- lapply(datafr, FUN=rownames_to_column)
+
+func <- function(...) {
+  df1 = list(...)[[1]]
+  df2 = list(...)[[2]]
+  col1 = colnames(df1)[1]
+  col2 = colnames(df2)[1]
+  xxx = dplyr::full_join(..., by = c("POS", "CHROM"))
+  return(xxx)
+}
+
+t <- Reduce( func, datafr)
+t2 <- as.data.frame(colMeans(t, na.rm = T))
+
+rownames(t2) <- c("CHROM", "POS", filelist)
+t2$pi <- t2$`colMeans(t, na.rm = T)`
+t2$pop <- rownames(t2)
+
+t2$pop<- gsub("./pi//","",t2$pop)
+t2$pop <- gsub(".samples.sites.pi","", t2$pop)
+
+pi_df <- filter(t2, pop != "CHROM" & pop != "POS") %>% 
+  select(pi, pop)
+
+pi_df$grouping <- c("A", "B", "C", "D", "E", "F1", "F2", "G1", "G2", "Greece", "H", "I1", "I2", "ID", "OR", "Primary","Turkey", "WA")
+
+pi_site_hist <- inner_join(pi_df, key_df)
+
+t3 <- as.data.frame(lapply(t, se))
+colnames(t3) <- c("CHROM", "POS", filelist)
+
+
+filelist = list.files(path = "./groups-pi/", pattern = "nonCand.sites.pi", full.names = T)
+datafr <- lapply(filelist, FUN=read.table, header = T)
+#datafr2<- lapply(datafr, FUN=rownames_to_column)
+
+func <- function(...) {
+  df1 = list(...)[[1]]
+  df2 = list(...)[[2]]
+  col1 = colnames(df1)[1]
+  col2 = colnames(df2)[1]
+  xxx = dplyr::full_join(..., by = c("POS", "CHROM"))
+  return(xxx)
+}
+
+t <- Reduce( func, datafr)
+t2 <- as.data.frame(colMeans(t, na.rm = T))
+
+rownames(t2) <- c("CHROM", "POS", filelist)
+t2$pi <- t2$`colMeans(t, na.rm = T)`
+t2$pop <- rownames(t2)
+
+t2$pop<- gsub("./pi//","",t2$pop)
+t2$pop <- gsub(".samples.sites.pi","", t2$pop)
+
+pi_df <- filter(t2, pop != "CHROM" & pop != "POS") %>% 
+  select(pi, pop)
+
+pi_df$grouping <- c("A", "B", "C", "D", "E", "F1", "F2", "G1", "G2", "Greece", "H", "I1", "I2", "ID", "OR", "Primary","Turkey", "WA")
+
+pi_nonCand_site_hist <- inner_join(pi_df, key_df)
+
+t3 <- as.data.frame(lapply(t, se))
+colnames(t3) <- c("CHROM", "POS", filelist)
+
+filelist = list.files(path = "./groups-pi/", pattern = "pRDA.EU.sites.pi", full.names = T)
+datafr <- lapply(filelist, FUN=read.table, header = T)
+#datafr2<- lapply(datafr, FUN=rownames_to_column)
+
+func <- function(...) {
+  df1 = list(...)[[1]]
+  df2 = list(...)[[2]]
+  col1 = colnames(df1)[1]
+  col2 = colnames(df2)[1]
+  xxx = dplyr::full_join(..., by = c("POS", "CHROM"))
+  return(xxx)
+}
+
+t <- Reduce( func, datafr)
+t2 <- as.data.frame(colMeans(t, na.rm = T))
+
+rownames(t2) <- c("CHROM", "POS", filelist)
+t2$pi <- t2$`colMeans(t, na.rm = T)`
+t2$pop <- rownames(t2)
+
+t2$pop<- gsub("./pi//","",t2$pop)
+t2$pop <- gsub(".samples.sites.pi","", t2$pop)
+
+pi_df <- filter(t2, pop != "CHROM" & pop != "POS") %>% 
+  dplyr::select(pi, pop)
+
+pi_df$grouping <- c("A", "B", "C", "D", "E", "F1", "F2", "G1", "G2", "Greece", "H", "I1", "I2", "ID", "OR", "Primary","Turkey", "WA")
+
+pi_EUCand_site_hist <- inner_join(pi_df, key_df)
+
+pi_site_hist$history <- factor(pi_site_hist$history, levels= c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+pi_nonCand_site_hist$history <- factor(pi_nonCand_site_hist$history, levels= c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+pi_EUCand_site_hist$history <- factor(pi_EUCand_site_hist$history, levels= c("Turkey", "Greece", "Primary", "P/S", "S/T", "S/T/Q", "T/Q"))
+
+
+
+ggplot() + geom_point(data = pi_site_hist, mapping =aes(x= history, y = pi), color = "orange3") + 
+  geom_point(data = pi_nonCand_site_hist, mapping = aes(x = history, y = pi), color = "black") +
+  geom_point(data = pi_EUCand_site_hist, mapping = aes(x = history, y = pi), color = "skyblue1") +
+  theme_bw() + ylab("Per-Site Nucleotide Diversity")
+
+ggsave("Pi-Feb192026.pdf", height = 5, width = 6)
+
+```
+
